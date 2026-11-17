@@ -1,0 +1,99 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "adamus"
+# Not a release number: releases are git tags, and a session records the commit it ran from.
+version = "0"
+description = "Real-time control of generated music by focus detected in EEG"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Rastislav Lipták" }]
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "brainflow==5.24.0",
+    "librosa==1.0.0",
+    "numpy==2.3.5",
+    "pyyaml==6.0.3",
+    "readchar==4.2.2",
+    "rich==15.0.0",
+    "scipy==1.18.1",
+    "sounddevice==0.5.6",
+    "soundfile==0.14.0",
+]
+
+[project.optional-dependencies]
+# The same release as the mrt2~ object that scripts/install_generator.sh builds.
+generator = ["magenta-rt[mlx]==2.0.3"]
+dev = [
+    "hypothesis==6.170.15",
+    "mypy==2.4.1",
+    "pytest==9.2.0",
+    "pytest-cov==7.1.0",
+    "ruff==0.17.4",
+    "types-PyYAML==6.0.12.20261111",
+]
+
+[project.scripts]
+adamus = "adamus.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"adamus.realtime" = ["pure_data_patch.pd"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config --import-mode=importlib"
+pythonpath = ["."]
+filterwarnings = ["error"]
+markers = [
+    "realtime: plays a recording in real time (tens of seconds)",
+    "training: checks the trained focus models on their downloaded data (tens of minutes)",
+]
+
+[tool.coverage.run]
+source = ["adamus"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 95
+show_missing = true
+
+[tool.ruff]
+line-length = 100
+src = ["src", "."]  # adamus, and the tests' own package of helpers
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "B", "UP", "SIM", "PTH", "RET", "ARG", "C90", "PLR", "PLW", "BLE"]
+ignore = [
+    "PLR2004",  # which numbers need a name is decided by tests/coding_rules (PLAIN_NUMBERS)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests name things like the formulas (E), keep unused fixture arguments, compare
+# against literal expected values, and put a constant first when it is what the
+# value computed is checked against (SIM300 takes that for a yoda condition).
+"tests/**" = ["N803", "ARG", "PLR", "PLW", "E731", "BLE", "SIM300"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.pylint]
+max-args = 7
+max-statements = 40
+max-branches = 10
+
+[tool.mypy]
+strict = true
+files = ["src", "scripts"]
+mypy_path = "src"
+explicit_package_bases = true
+
+[[tool.mypy.overrides]]
+module = ["brainflow.*", "librosa.*", "readchar.*", "scipy.*", "sounddevice.*", "soundfile.*"]
+ignore_missing_imports = true
+follow_untyped_imports = false

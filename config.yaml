@@ -1,0 +1,29 @@
+# AdaMus configuration. Paths are relative to the folder the program is started in.
+
+board:                        # the headset; recordings of datasets are played at its rate
+  name: Muse 2
+  id: 38                      # BrainFlow board id
+  serial_number: ""           # "" = the first one found
+protocol:
+  - [REST, 60]
+  - [FOCUS, 60]
+  - [REST, 60]
+  - [FOCUS, 60]
+  - [REST, 60]
+  - [FOCUS, 60]
+  - [REST, 60]
+  - [FOCUS, 60]
+  - [FREE, 0]                 # 0 = until [SPACE]
+generator:
+  folder: models/music_generator  # the program installs the generator here
+  model: mrt2_small
+  port: 3000                  # any free local port
+  # One piece of music in two forms. While focus is off a piano plays alone; as focus
+  # comes on, the orchestra joins it.
+  prompt_idle: quiet slow solo piano
+  prompt_focus: fast loud piano concerto with full symphony orchestra brass and timpani
+timeouts:
+  stream_s: 5
+  pd_connect_s: 30
+  model_load_s: 120
+poll_s: 0.05

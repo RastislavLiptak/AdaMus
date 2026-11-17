@@ -1,0 +1,17 @@
+#N canvas 0 0 420 260 12;
+#X obj 30 20 netreceive {port};
+#X obj 30 60 route rec;
+#X obj 150 100 mrt2~;
+#X obj 30 150 writesf~ 2;
+#X obj 150 190 dac~;
+#X obj 290 60 sel 0;
+#X msg 290 100 \; pd quit;
+#X connect 0 0 1 0;
+#X connect 1 0 3 0;
+#X connect 1 1 2 0;
+#X connect 2 0 3 0;
+#X connect 2 1 3 1;
+#X connect 2 0 4 0;
+#X connect 2 1 4 1;
+#X connect 0 1 5 0;
+#X connect 5 0 6 0;
