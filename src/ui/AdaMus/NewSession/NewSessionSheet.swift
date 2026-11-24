@@ -1,5 +1,5 @@
 // A new session, in a sheet over the window (HIG "Sheets"): the form, in the order the session
-// needs it (source, audio output, recording, name), then the session as it runs, with a button that stops it.
+// needs it (the source with its recording, the audio output, the name), then the session as it runs, with a button that stops it.
 // Once it has ended and been analysed, the sheet closes on its overview.
 import SwiftUI
 
@@ -63,7 +63,6 @@ struct SessionFormView: View {
         Form {
             Section {
                 sourcePicker
-                outputPicker
                 if let recordings = model.source?.recordings, !recordings.isEmpty {
                     Picker(
                         "Recording", selection: Binding(get: { model.recording }, set: { model.chosenRecording = $0 })
@@ -72,6 +71,7 @@ struct SessionFormView: View {
                     }
                     .accessibilityLabel("Recording")  // as the name below
                 }
+                outputPicker
                 TextField("Name", text: $model.name, prompt: Text("Required"))
                     .accessibilityLabel("Name")  // the form shows its title beside it, unread
                 if let hint = model.nameProblem {
