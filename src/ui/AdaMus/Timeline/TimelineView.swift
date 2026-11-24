@@ -71,7 +71,7 @@ struct LaneScroller: View {
         .onScrollGeometryChange(for: Double.self) {
             $0.contentOffset.x
         } action: { _, offset in
-            if model.pointsPerSecond > 0 { model.scrollX = model.timeline.startS + offset / model.pointsPerSecond }
+            model.scrolled(toOffset: offset)
         }
         .onGeometryChange(for: Double.self) {
             $0.size.width

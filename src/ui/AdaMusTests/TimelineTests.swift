@@ -293,6 +293,53 @@ struct PlaybackTests {
         model.togglePlayback()
         #expect(!model.playing)
     }
+
+    /// The music of a session of 200 s, from its start, its plots 600 points wide: 60 s in view,
+    /// 10 points a second. Its sound is never there: the player finds so only once the test waits.
+    private func playable() -> TimelineModel {
+        let audio = AudioTrack(
+            id: "sound", title: "Sound", caption: nil, startS: 0, durationS: 200, rateHz: 1, buckets: 200, level: [])
+        let timeline = Timeline(
+            startS: 0, endS: 200, groups: [TrackGroup(title: "Music", colour: .pink, tracks: [.audio(audio)])],
+            legend: [], consoles: [])
+        let model = TimelineModel(timeline: timeline) { _ in URL(filePath: "/nowhere/sound.wav") }
+        model.plotWidthChanged(to: 600)
+        return model
+    }
+
+    @Test func theViewFollowsThePlayheadItShowedAtPlayUntilItIsScrolledOutOfView() {
+        let model = playable()
+        defer { model.stop() }
+        model.togglePlayback()
+        #expect(model.playing && model.following)
+        model.played(to: 61)  // past the edge: the next page
+        #expect(model.scrollX == 61)
+        model.scrolled(toOffset: 610.5)  // as the scroll view rounds where it was told to go
+        #expect(model.following)
+        model.scrolled(toOffset: 550)  // by the operator, the playhead still in view
+        #expect(model.following && model.scrollX == 55)
+        model.played(to: 70)
+        model.scrolled(toOffset: 0)  // the playhead out of view: the view no longer turns back to it
+        #expect(!model.following)
+        model.played(to: 80)
+        #expect(model.scrollX == 0 && model.playhead == 80)
+    }
+
+    @Test func aPlayheadOutOfViewAtPlayIsNotFollowedEvenOnceItComesIntoView() {
+        let model = playable()
+        defer { model.stop() }
+        model.seek(to: 80)
+        model.scrolled(toOffset: 0)  // 0 to 60 s
+        model.togglePlayback()
+        #expect(model.playing && !model.following)
+        model.played(to: 30)
+        model.played(to: 61)
+        #expect(model.scrollX == 0)
+        model.togglePlayback()  // paused, scrolled to see it, and played again: followed
+        model.scrolled(toOffset: 300)
+        model.togglePlayback()
+        #expect(model.playing && model.following)
+    }
 }
 
 struct PartitioningTests {

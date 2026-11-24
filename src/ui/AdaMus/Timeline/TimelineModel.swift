@@ -60,6 +60,9 @@ final class TimelineModel {
     /// Where the playhead is, in seconds of the session.
     private(set) var playhead: Double
     private(set) var playing = false
+    /// Whether the view turns its pages after the playhead while it plays: so if it showed the
+    /// playhead when Play was pressed, until the operator scrolls it out of view.
+    private(set) var following = false
     /// Why the sound cannot be played, once the player has found it cannot.
     private(set) var playbackProblem: String?
 
@@ -148,6 +151,22 @@ final class TimelineModel {
         scroll(to: anchor - share * visibleSeconds)
     }
 
+    /// The scroll view was scrolled to ``offset`` points across the lanes: by the operator, or as
+    /// it was told. A scroll that leaves the playhead out of view, while the view follows it,
+    /// stops the following, so that the view does not turn back to it against the operator.
+    func scrolled(toOffset offset: Double) {
+        guard pointsPerSecond > 0 else { return }
+        scrollX = timeline.startS + offset / pointsPerSecond
+        if following, !shows(playhead) { following = false }
+    }
+
+    /// Whether ``time`` is in view: give or take the width of the playhead's line, as far as a
+    /// scroll view rounds where it is scrolled to.
+    func shows(_ time: Double) -> Bool {
+        let slack = Double(Metrics.playhead) / max(pointsPerSecond, .leastNonzeroMagnitude)
+        return time >= scrollX - slack && time <= scrollX + visibleSeconds + slack
+    }
+
     /// Scroll the view to begin at ``time``, as far as the session reaches.
     func scroll(to time: Double) {
         guard pointsPerSecond > 0 else { return }
@@ -168,6 +187,7 @@ final class TimelineModel {
             player.seek(to: CMTime(seconds: from >= 0 && from < audio.durationS ? from : 0, preferredTimescale: 1000))
             player.play()
             playing = true
+            following = shows(playhead)
         }
     }
 
@@ -256,10 +276,11 @@ final class TimelineModel {
         self.player = player
     }
 
-    private func played(to seconds: Double) {
+    /// The player has played to ``seconds`` of the sound, as its clock tells.
+    func played(to seconds: Double) {
         guard playing, let audio else { return }
         playhead = audio.startS + seconds
-        if playhead > scrollX + visibleSeconds || playhead < scrollX {
+        if following, playhead > scrollX + visibleSeconds || playhead < scrollX {
             scroll(to: playhead)  // the next page, as an editor turns it
         }
     }
