@@ -25,6 +25,7 @@ from adamus.server.dashboard_sections import (
     caution_of,
     configuration_section,
     detection_section,
+    failures_of,
     files_section,
     music_section,
     part,
@@ -107,7 +108,8 @@ def readable_dashboard(
         name=name_of(folder),
         problem=start_problem(activity) or metrics_problem(activity),
         pending=pending,
-        summary=summary_facts(session, statistics, activity, own_recording),
+        summary=summary_facts(session, statistics, own_recording),
+        failures=failures_of(session, statistics, activity),
         caution=caution_of(session),
         highlights=highlights_of(statistics, metrics),
         sections=[
@@ -155,5 +157,5 @@ def dashboard_of(folder: Path, own_recording: Path | None, analysis_pending: boo
         said = start_problem(activity) or why_unreadable(folder, problem)
         return Dashboard(
             name=name, problem=said, pending=pending, summary=[],
-            caution=None, highlights=[], sections=[files_section(folder)],
+            failures=[], caution=None, highlights=[], sections=[files_section(folder)],
         )  # fmt: skip

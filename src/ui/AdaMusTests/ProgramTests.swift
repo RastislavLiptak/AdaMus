@@ -132,7 +132,7 @@ struct RealProgramTests {
         let given = try #require(RealProgram.environment["ADAMUS_ANSWERS"])
         let answers = try APIClient.decoder.decode(Answers.self, from: Data(given.utf8))
         #expect(answers.dashboard.problem == "problem" && answers.dashboard.pending == "pending")
-        #expect(answers.dashboard.caution == "caution")
+        #expect(answers.dashboard.failures == ["failure"] && answers.dashboard.caution == "caution")
         #expect(answers.sourceCheck == SourceCheck(warning: "warning", problem: "problem"))
         #expect(answers.runState == RunState(run: 1, phase: .idle, sessionId: "session_id", problem: "problem"))
     }

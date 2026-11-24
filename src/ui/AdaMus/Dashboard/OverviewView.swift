@@ -16,12 +16,11 @@ struct OverviewView: View {
                 if !dashboard.summary.isEmpty {
                     Summary(facts: dashboard.summary)
                 }
-                if let caution = dashboard.caution {  // on yellow, as it is to be seen
-                    Label(caution, systemImage: "exclamationmark.triangle.fill")
-                        .symbolRenderingMode(.multicolor)
-                        .padding(Metrics.Spacing.regular)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.yellow.quaternary, in: .rect(cornerRadius: Metrics.cornerRadius))
+                ForEach(dashboard.failures, id: \.self) {
+                    Notice.failure($0)
+                }
+                if let caution = dashboard.caution {
+                    Notice.caution(caution)
                 }
                 Results(highlights: dashboard.highlights)
                 if let electrodes, !electrodes.placed.isEmpty {
@@ -51,6 +50,38 @@ struct DashboardNotes: View {
             }
             .foregroundStyle(.secondary)
         }
+    }
+}
+
+/// What is to be seen before the results: on a box of its colour, by its symbol in that colour,
+/// red for what went wrong, yellow for what bears on how they are read. The colour is never all
+/// that tells it: the symbol and the text say it too (HIG "Color").
+struct Notice: View {
+    let text: String
+    let systemImage: String
+    let fill: AnyShapeStyle
+
+    /// What went wrong stands out the most (HIG "Feedback": as much as it matters). Red is dark,
+    /// so it takes a stronger level than yellow to be seen at all: measured in Dark Mode, the
+    /// box against the page 2.4:1 (quaternary only 1.35:1), the text on it 4.9:1, over the
+    /// 4.5:1 that text needs (HIG "Accessibility").
+    static func failure(_ text: String) -> Notice {
+        Notice(text: text, systemImage: "xmark.octagon.fill", fill: AnyShapeStyle(.red.secondary))
+    }
+
+    /// Yellow is light: at its lowest level it already stands out 1.8:1, and a stronger one
+    /// would leave the text on it 2.7:1, too little to read.
+    static func caution(_ text: String) -> Notice {
+        Notice(text: text, systemImage: "exclamationmark.triangle.fill", fill: AnyShapeStyle(.yellow.quaternary))
+    }
+
+    var body: some View {
+        Label(text, systemImage: systemImage)
+            .symbolRenderingMode(.multicolor)
+            .textSelection(.enabled)
+            .padding(Metrics.Spacing.regular)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(fill, in: .rect(cornerRadius: Metrics.cornerRadius))
     }
 }
 

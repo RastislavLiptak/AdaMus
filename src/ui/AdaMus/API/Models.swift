@@ -258,6 +258,7 @@ struct Dashboard: Decodable, Sendable {
     let problem: String?
     let pending: String?
     let summary: [Fact]  // what the session is and how it ended
+    let failures: [String]  // what went wrong, each on its own
     let caution: String?  // what bears on how its results are read
     let highlights: [Highlight]
     let sections: [FactSection]

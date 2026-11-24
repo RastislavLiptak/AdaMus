@@ -13,7 +13,7 @@ private func page(_ total: Int, _ ids: [String]) -> String {
 private func dashboard(pending: String?) -> String {
     let pending = pending.map { #""\#($0)""# } ?? "null"
     return #"""
-        {"name": "Session a", "problem": null, "pending": \#(pending), "summary": [], "caution": null,
+        {"name": "Session a", "problem": null, "pending": \#(pending), "summary": [], "failures": [], "caution": null,
          "highlights": [], "sections": []}
         """#
 }

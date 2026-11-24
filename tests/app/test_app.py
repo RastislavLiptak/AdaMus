@@ -94,7 +94,8 @@ def rare_answers():
     name: the app must read every one under the name the program gives it."""
     return json.dumps({
         "dashboard": Dashboard(
-            name="name", problem="problem", pending="pending", summary=[], caution="caution",
+            name="name", problem="problem", pending="pending", summary=[], failures=["failure"],
+            caution="caution",
             highlights=[], sections=[],
         ).model_dump(mode="json"),
         "source_check": SourceCheck(warning="warning", problem="problem").model_dump(mode="json"),

@@ -22,6 +22,7 @@ from adamus.server.dashboard import (
 from adamus.server.dashboard_sections import (
     blocks_section,
     ended_by,
+    failures_of,
     release,
     setting_value,
 )
@@ -180,6 +181,7 @@ def test_the_overview_says_when_how_long_on_what_and_how_it_went(dashboard, play
     assert list(run) == ["Started", "Duration", "Source", "Recording", "Result"]
     assert status(dashboard) == {"Result": "good"}  # only the result tells how it went
     assert dashboard.caution is None  # the model never saw who the recording is of
+    assert dashboard.failures == []  # nothing went wrong
     assert "Folder" not in run  # the folder is the program's own matter
     assert "Why" not in run and "Error" not in run and "Own Recording" not in run
 
@@ -329,10 +331,21 @@ def test_a_session_stopped_early_has_no_row_of_a_block_it_did_not_get_to(copied)
     assert [(row[0].value, row[1].value) for row in rows] == [(1, "Rest"), (2, "Focus")]
 
 
-def test_a_recording_that_could_not_be_stored_says_why(copied):
+def test_a_recording_that_could_not_be_stored_is_among_what_went_wrong(copied):
     line = {"t": 3.0, "type": "RECORDING_NOT_STORED", "message": "disk full"}
     (copied / c.FILE_ACTIVITY).write_text(json.dumps(line) + "\n")
-    assert summary(dashboard_of(copied, None, False))["Recording Not Stored"][0] == "disk full"
+    dashboard = dashboard_of(copied, None, False)
+    assert dashboard.failures == ["The recording could not be stored: disk full"]
+    assert "Recording Not Stored" not in summary(dashboard)  # said once, not again
+
+
+def test_why_the_result_is_not_ok_comes_before_a_recording_not_stored(played):
+    session = load_session_folder(played.directory)
+    failed = replace(statistics_of(session), detail="the session did not finish")
+    activity = [{"t": 3.0, "type": "RECORDING_NOT_STORED", "message": "disk full"}]
+    assert failures_of(session, failed, activity) == [
+        "The session did not finish", "The recording could not be stored: disk full",
+    ]  # fmt: skip
 
 
 def test_metrics_that_could_not_be_computed_are_unknown_and_the_reason_is_given(copied):
@@ -352,11 +365,22 @@ def test_an_error_of_the_session_is_named_with_where_it_happened(copied):
     events += [{"t": end["t"], "n": end["n"], "type": "ERROR", "where": "loop", "message": "boom"},
                {**end, "reason": "error"}]  # fmt: skip
     (copied / c.FILE_EVENTS).write_text("".join(json.dumps(e) + "\n" for e in events))
-    run = summary(dashboard_of(copied, None, False))
-    assert run["Error"] == ("loop: boom", "text") and run["Result"] == ("ERROR", "text")
-    assert facts(dashboard_of(copied, None, False), "Run")["Ended By"] == ("Error", "text")
-    assert status(dashboard_of(copied, None, False)) == {"Result": "bad"}
-    assert run["Why"] == ("boom", "text")
+    dashboard = dashboard_of(copied, None, False)
+    assert dashboard.failures == ["Error in loop: boom"]  # said once, not again among the facts
+    assert summary(dashboard)["Result"] == ("ERROR", "text")
+    assert status(dashboard) == {"Result": "bad"}
+    assert facts(dashboard, "Run")["Ended By"] == ("Error", "text")
+    assert "Why" not in summary(dashboard) and "Error" not in summary(dashboard)
+
+
+@pytest.mark.parametrize(
+    ("detail", "said"),
+    [("not one clean step for the detector", "Not one clean step for the detector"),
+     ("the session did not finish", "The session did not finish")],
+)  # fmt: skip
+def test_a_result_that_is_not_ok_without_an_error_says_why_as_a_sentence(played, detail, said):
+    session = load_session_folder(played.directory)
+    assert failures_of(session, replace(statistics_of(session), detail=detail), []) == [said]
 
 
 def test_a_folder_that_cannot_be_read_shows_its_files_and_why_without_its_path(copied):
@@ -417,6 +441,7 @@ def test_a_session_that_cannot_be_read_has_no_first_look(copied):
     (copied / c.FILE_META).write_text("{")
     unreadable = dashboard_of(copied, None, analysis_pending=False)
     assert (unreadable.highlights, unreadable.summary, unreadable.caution) == ([], [], None)
+    assert unreadable.failures == []  # why it cannot be read is its problem
 
 
 def test_a_recording_of_a_person_the_focus_model_learned_from_is_cautioned_of(copied, tmp_path):

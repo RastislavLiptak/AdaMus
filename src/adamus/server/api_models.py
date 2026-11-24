@@ -210,14 +210,15 @@ class Highlight(BaseModel):
 
 
 class Dashboard(BaseModel):
-    """The dashboard: its overview first, what the session is (``summary``), anything that bears
-    on how its results are read (``caution``) and its main results; then its details, every
-    other fact in sections."""
+    """The dashboard: its overview first, what the session is (``summary``), what went wrong
+    (``failures``), anything that bears on how its results are read (``caution``) and its main
+    results; then its details, every other fact in sections."""
 
     name: str
     problem: str | None  # why some of the session could not be read
     pending: str | None  # what is still being worked on, while it is
     summary: list[Fact]  # what the session is and how it ended
+    failures: list[str]  # what went wrong, each on its own
     caution: str | None
     highlights: list[Highlight]
     sections: list[Section]

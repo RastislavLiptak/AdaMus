@@ -56,6 +56,7 @@ TRAINED_ON_PERSON = (
     "The focus model was trained on this person: {person} is one of the {people} people it "
     "learned from, so the detection does better here than on someone it never saw."
 )
+NOT_STORED = "The recording could not be stored"  # what the headset delivered stays in the session
 FIRST_FOUND = "The first one found"  # a headset without a serial number in the configuration
 HIGH = f"{c.PERCENTILE}th Percentile"
 #: The settings of config.yaml by the names the dashboard gives them; any other setting
@@ -155,6 +156,26 @@ def caution_of(session: SessionFolder) -> str | None:
     return TRAINED_ON_PERSON.format(person=person, people=len(people))
 
 
+def failures_of(
+    session: SessionFolder, statistics: Statistics, activity: list[dict[str, Any]]
+) -> list[str]:
+    """What went wrong: first why the result is not OK (the error and where it happened, or why
+    there was nothing to detect from), then each time what the headset delivered could not be
+    stored as a recording; none when it all went well."""
+    failures = []
+    error = session.event(EVENT_ERROR)
+    if error is not None:
+        failures.append(f"Error in {error.get('where')}: {error.get('message')}")
+    elif statistics.detail is not None:
+        failures.append(statistics.detail[:1].upper() + statistics.detail[1:])
+    failures += [
+        f"{NOT_STORED}: {entry['message']}"
+        for entry in activity
+        if entry["type"] == ACTION_RECORDING_NOT_STORED
+    ]
+    return failures
+
+
 def ended_by(reason: str, activity: list[dict[str, Any]]) -> str:
     """What ended the session: the app or the program going, or the reason its record gives
     (as it gives it, when a later program no longer knows it)."""
@@ -163,12 +184,9 @@ def ended_by(reason: str, activity: list[dict[str, Any]]) -> str:
 
 
 def summary_facts(
-    session: SessionFolder, statistics: Statistics, activity: list[dict[str, Any]],
-    own_recording: Path | None,
-) -> list[Fact]:  # fmt: skip
+    session: SessionFolder, statistics: Statistics, own_recording: Path | None
+) -> list[Fact]:
     """When, how long and on what the session ran, its result and where it is kept."""
-    error = session.event(EVENT_ERROR)
-    not_stored = [entry for entry in activity if entry["type"] == ACTION_RECORDING_NOT_STORED]
     items = [
         fact("Started", session.meta["started"], "datetime"),
         fact("Duration", statistics.duration_s, "duration"),
@@ -179,13 +197,8 @@ def summary_facts(
             status="good" if statistics.verdict == OK else "bad",
         ),  # fmt: skip
     ]
-    if statistics.detail is not None:
-        items.append(fact("Why", statistics.detail))
-    if error is not None:
-        items.append(fact("Error", f"{error.get('where')}: {error.get('message')}"))
     if own_recording is not None:
         items.append(fact("Own Recording", "Stored, to be played again"))
-    items += [fact("Recording Not Stored", entry["message"]) for entry in not_stored]
     return items
 
 
