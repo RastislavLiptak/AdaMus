@@ -1,13 +1,16 @@
 // The detail of a session: its name as the title of the window (when, how long and on what it
 // ran are first on its overview), its overview, timeline or details switched by a segmented
 // control in the toolbar (HIG "Segmented controls": to switch views in a toolbar); beside the
-// timeline, its logs in the inspector. A part once shown stays
+// timeline, its logs in the inspector. The toolbar also deletes the session, after the same
+// question as the sidebar asks. A part once shown stays
 // built and is only hidden: on a recorded session, that took a third off the work of a switch.
 import SwiftUI
 
 struct SessionView: View {
     @Bindable var session: SessionModel
     @Binding var showsInspector: Bool
+    /// Asks whether to delete the session.
+    let askToDelete: () -> Void
 
     var body: some View {
         ZStack {
@@ -32,6 +35,12 @@ struct SessionView: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
             }
+            ToolbarItem {
+                Button("Delete…", systemImage: "trash", action: askToDelete)
+                    .foregroundStyle(.red)
+                    .help("Delete This Session")
+            }
+            ToolbarSpacer(.fixed)  // apart from the tools that only look at the session
             timelineTools
         }
     }
@@ -78,8 +87,6 @@ struct SessionView: View {
                 timeline?.zoom(by: TimelineModel.zoomStep)
             }
             .disabled(timeline?.canZoomIn != true)
-        }
-        ToolbarItem {
             Button(showsInspector ? "Hide Inspector" : "Show Inspector", systemImage: "sidebar.trailing") {
                 showsInspector.toggle()
             }

@@ -1,7 +1,7 @@
 // The window once the program is ready: the sessions in a sidebar, the one chosen beside it
 // (HIG "Sidebars", "Split views"). A session is deleted from the sidebar, as a file in Finder:
-// with its context menu, Edit ▸ Delete or the Delete key, then confirmed, as it cannot be
-// undone (HIG "Alerts").
+// with its context menu, Edit ▸ Delete or the Delete key, or with the toolbar's button, then
+// confirmed, as it cannot be undone (HIG "Alerts").
 import SwiftUI
 
 struct WorkspaceView: View {
@@ -18,8 +18,10 @@ struct WorkspaceView: View {
                     min: Metrics.sidebar.min, ideal: Metrics.sidebar.ideal, max: Metrics.sidebar.max)
         } detail: {
             if let session = workspace.session {
-                SessionView(session: session, showsInspector: $workspace.showsInspector)
-                    .id(session.summary.id)
+                SessionView(session: session, showsInspector: $workspace.showsInspector) {
+                    workspace.askToDelete(session.summary.id)
+                }
+                .id(session.summary.id)
             } else if let problem = workspace.listProblem, workspace.sessions.isEmpty {
                 ContentUnavailableView {
                     Label("The Sessions Could Not Be Read", systemImage: "exclamationmark.triangle")

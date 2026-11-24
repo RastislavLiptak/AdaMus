@@ -312,4 +312,15 @@ final class BrowsingTests: WindowTests {
         XCTAssertTrue(question.waitForNonExistence(timeout: patience))
         XCTAssertTrue(sidebarRow("morning_focus").exists, "nothing is deleted unasked")
     }
+
+    func testTheToolbarDeletesTheChosenSessionAfterTheSameQuestion() {
+        sidebarRow("morning_focus").click()
+        keep("the toolbar with its delete button")
+        app.toolbars.buttons["Delete…"].click()
+        let question = app.staticTexts["Delete “morning_focus”?"]
+        XCTAssertTrue(question.waitForExistence(timeout: patience))
+        app.buttons["Cancel"].click()
+        XCTAssertTrue(question.waitForNonExistence(timeout: patience))
+        XCTAssertTrue(sidebarRow("morning_focus").exists, "nothing is deleted unasked")
+    }
 }
