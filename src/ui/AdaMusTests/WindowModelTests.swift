@@ -87,6 +87,46 @@ struct WorkspaceTests {
         #expect(workspace.selection == nil && workspace.session == nil)
     }
 
+    @Test func aRenamedSessionKeepsItsPlaceAndStaysChosenOnTheSamePart() async throws {
+        let program = StubProgram()
+        program.answer("GET api/sessions", page(2, ["a", "b"]))
+        program.answer("PATCH api/sessions/b", #"{"id": "b-renamed", "name": "Karel 8"}"#)
+        let workspace = Workspace(api: program.api)
+        await workspace.load()
+        workspace.selection = "b"
+        workspace.session?.part = .details
+        #expect(await workspace.rename(workspace.sessions[1], to: "Karel 8"))
+        #expect(workspace.sessions.map(\.id) == ["a", "b-renamed"] && workspace.sessions[1].name == "Karel 8")
+        #expect(workspace.selection == "b-renamed" && workspace.session?.summary.id == "b-renamed")
+        #expect(workspace.session?.part == .details && workspace.problem == nil)
+        let sent = try JSONSerialization.jsonObject(
+            with: try #require(program.made("PATCH api/sessions/b").first?.body))
+        #expect(sent as? [String: String] == ["name": "Karel 8"])
+    }
+
+    @Test func aSessionRenamedOnceAnotherWasChosenLeavesThatOneChosen() async {
+        let program = StubProgram()
+        program.answer("GET api/sessions", page(2, ["a", "b"]))
+        program.answer("PATCH api/sessions/a", #"{"id": "a-renamed", "name": "New"}"#)
+        let workspace = Workspace(api: program.api)
+        await workspace.load()
+        workspace.selection = "b"
+        #expect(await workspace.rename(workspace.sessions[0], to: "New"))
+        #expect(workspace.selection == "b" && workspace.sessions.map(\.id) == ["a-renamed", "b"])
+    }
+
+    @Test func aRefusedNameSaysWhyAndChangesNothing() async {
+        let program = StubProgram()
+        program.answer("GET api/sessions", page(1, ["a"]))
+        program.answer("PATCH api/sessions/a", status: 422, #"{"detail": "Use at most 50 characters."}"#)
+        let workspace = Workspace(api: program.api)
+        await workspace.load()
+        workspace.selection = "a"
+        #expect(await !workspace.rename(workspace.sessions[0], to: "a/b"))
+        #expect(workspace.problem == "Use at most 50 characters." && !workspace.isInFront)  // said in an alert
+        #expect(workspace.selection == "a" && workspace.sessions.map(\.name) == ["Session a"])
+    }
+
     @Test func aDeletedSessionLeavesTheListAndAFailedDeletionSaysWhy() async {
         let program = StubProgram()
         program.answer("GET api/sessions", page(2, ["a", "b"]))

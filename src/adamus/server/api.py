@@ -27,17 +27,20 @@ from adamus.server.api_models import (
     NewSessionForm,
     RunState,
     SessionPage,
+    SessionRename,
     SessionRequest,
+    SessionSummary,
     SourceCheck,
     Timeline,
 )
 from adamus.server.dashboard import UNREADABLE_PROBLEMS, dashboard_of, why_unreadable
 from adamus.server.electrodes import electrodes_of, head_model
 from adamus.server.excerpt import excerpt_of
-from adamus.server.new_session import NewSession
+from adamus.server.new_session import NAME_HINT, NewSession
 from adamus.server.session_catalogue import SessionCatalogue
 from adamus.server.session_runner import SessionRunner
 from adamus.server.timeline import SessionTracks, session_tracks
+from adamus.session_format import is_session_name
 
 TOKEN_HEADER = "X-AdaMus-Token"
 ACCEPTED, NO_CONTENT = 202, 204  # HTTP status codes of success
@@ -111,6 +114,7 @@ def create_api() -> FastAPI:
         openapi_url=None, docs_url=None, redoc_url=None,
     )  # fmt: skip
     add_session_routes(api)
+    add_change_routes(api)
     add_excerpt_route(api)
     add_electrode_routes(api)
     add_new_session_routes(api)
@@ -145,8 +149,15 @@ def is_busy_with(services: Services, session_id: str) -> bool:
     return state.phase != "idle" and state.session_id == session_id
 
 
+def refuse_if_running(services: Services, session_id: str) -> None:
+    """A session that is not there, or is not finished yet, cannot be changed."""
+    folder_of(services, session_id)
+    if is_busy_with(services, session_id):
+        raise HTTPException(CONFLICT, "the session is still running")
+
+
 def add_session_routes(api: FastAPI) -> None:
-    """The stored sessions: the list, the dashboard, the timeline, the deletion."""
+    """The stored sessions: the list, the dashboard, the timeline."""
 
     @api.get("/api/sessions")
     def sessions(services: Using, offset: Offset, limit: PageSize) -> SessionPage:
@@ -178,11 +189,27 @@ def add_session_routes(api: FastAPI) -> None:
             raise HTTPException(NOT_FOUND, f"no sound of {track_id}")
         return FileResponse(path, media_type=AUDIO)
 
+
+def add_change_routes(api: FastAPI) -> None:
+    """A stored session renamed or deleted, but not while it is still running."""
+
+    @api.patch("/api/sessions/{session_id}")
+    def rename(services: Using, session_id: str, request: SessionRename) -> SessionSummary:
+        refuse_if_running(services, session_id)
+        name = request.name.strip()
+        if not is_session_name(name):
+            raise HTTPException(INVALID, NAME_HINT)
+        try:
+            return services.catalogue.rename(session_id, name)
+        except AdamusError as problem:
+            raise HTTPException(CONFLICT, str(problem)) from problem
+        except OSError as problem:  # without its path, as the app shows it
+            why = f"The session could not be renamed: {problem.strerror}."
+            raise HTTPException(INVALID, why) from problem
+
     @api.delete("/api/sessions/{session_id}", status_code=NO_CONTENT)
     def delete(services: Using, session_id: str) -> None:
-        folder_of(services, session_id)
-        if is_busy_with(services, session_id):
-            raise HTTPException(CONFLICT, "the session is still running")
+        refuse_if_running(services, session_id)
         services.tracks.forget()
         services.catalogue.delete(session_id)
 

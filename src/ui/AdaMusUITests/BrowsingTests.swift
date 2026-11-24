@@ -303,6 +303,39 @@ final class BrowsingTests: WindowTests {
         add(picture)
     }
 
+    func testTheNameInTheToolbarRenamesTheSessionOnceTheFocusLeavesItOrReturnIsPressed() {
+        sidebarRow("morning_focus").click()
+        XCTAssertTrue(started.waitForExistence(timeout: patience))
+        app.radioButtons["Details"].click()
+        let name = app.toolbars.textFields["Session Name"]
+        rename(name, to: "a/b", then: .tab)
+        let refused = app.staticTexts["Use at most 50 characters, without “/” or “:”."]
+        XCTAssertTrue(refused.waitForExistence(timeout: patience), "a name no folder can have is said")
+        app.buttons["OK"].click()
+        XCTAssertEqual(name.value as? String, "morning_focus", "and the name stays")
+
+        rename(name, to: "evening_focus", then: .tab)
+        XCTAssertTrue(sidebarRow("evening_focus").waitForExistence(timeout: patience), "renamed once the focus left")
+        XCTAssertFalse(sidebarRow("morning_focus").exists)
+        XCTAssertTrue(sidebarRow("evening_focus").isSelected, "still chosen")
+        // a segment says it is chosen by its value
+        XCTAssertEqual(app.radioButtons["Details"].value as? Int, 1, "on the same part")
+        keep("the toolbar with the new name")
+        app.radioButtons["Overview"].click()
+        XCTAssertTrue(started.waitForExistence(timeout: patience), "read under its new name")
+
+        rename(app.toolbars.textFields["Session Name"], to: "morning_focus", then: .return)
+        XCTAssertTrue(sidebarRow("morning_focus").waitForExistence(timeout: patience), "renamed with Return")
+    }
+
+    private func rename(_ field: XCUIElement, to name: String, then key: XCUIKeyboardKey) {
+        XCTAssertTrue(field.waitForExistence(timeout: patience))
+        field.click()
+        field.typeKey("a", modifierFlags: .command)
+        field.typeText(name)
+        field.typeKey(key, modifierFlags: [])
+    }
+
     func testADeletionIsConfirmedFirstAndCanBeCancelled() {
         sidebarRow("morning_focus").click()
         app.typeKey(.delete, modifierFlags: [])

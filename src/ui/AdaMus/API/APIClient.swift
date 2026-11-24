@@ -74,6 +74,12 @@ struct APIClient: Sendable, Equatable {
         url("api/sessions/\(session)/tracks/\(track)/sound", query: ["token": token])
     }
 
+    /// The session called ``name`` from now on; its id changes with its name.
+    func rename(_ session: String, to name: String) async throws -> SessionSummary {
+        try await decoded(
+            "api/sessions/\(session)", method: "PATCH", sending: try Self.encoder.encode(SessionRename(name: name)))
+    }
+
     func delete(_ session: String) async throws {
         _ = try await body("api/sessions/\(session)", method: "DELETE")
     }

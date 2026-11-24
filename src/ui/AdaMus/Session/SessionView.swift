@@ -1,14 +1,16 @@
-// The detail of a session: its name as the title of the window (when, how long and on what it
-// ran are first on its overview), its overview, timeline or details switched by a segmented
-// control in the toolbar (HIG "Segmented controls": to switch views in a toolbar); beside the
-// timeline, its logs in the inspector. The toolbar also deletes the session, after the same
-// question as the sidebar asks. A part once shown stays
+// The detail of a session: its name in place of the title of the window, renamed where it
+// stands (when, how long and on what it ran are first on its overview), its overview, timeline
+// or details switched by a segmented control in the toolbar (HIG "Segmented controls": to
+// switch views in a toolbar); beside the timeline, its logs in the inspector. The toolbar also
+// deletes the session, after the same question as the sidebar asks. A part once shown stays
 // built and is only hidden: on a recorded session, that took a third off the work of a switch.
 import SwiftUI
 
 struct SessionView: View {
     @Bindable var session: SessionModel
     @Binding var showsInspector: Bool
+    /// Calls the session by another name; false when it could not be.
+    let rename: (String) async -> Bool
     /// Asks whether to delete the session.
     let askToDelete: () -> Void
 
@@ -26,8 +28,13 @@ struct SessionView: View {
                         min: Metrics.inspector.min, ideal: Metrics.inspector.ideal, max: Metrics.inspector.max)
             }
         }
-        .navigationTitle(session.summary.name)
+        .navigationTitle(session.summary.name)  // of the window still, as the Window menu lists it
+        .toolbar(removing: .title)
         .toolbar {
+            ToolbarItem(placement: .navigation) {
+                SessionNameField(name: session.summary.name, rename: rename)
+            }
+            .sharedBackgroundVisibility(.hidden)
             ToolbarItem(placement: .principal) {
                 Picker("View", selection: $session.part) {
                     ForEach(SessionPart.allCases) { Text($0.title).tag($0) }
@@ -109,5 +116,44 @@ struct SessionView: View {
     private func unreadable(_ problem: String) -> some View {
         ContentUnavailableView(
             "This Session Cannot Be Read", systemImage: "exclamationmark.triangle", description: Text(problem))
+    }
+}
+
+/// The name of a session where the title of the window stands: clicked, it is edited, and once
+/// the editing ends (Return, or the focus gone elsewhere) the session is renamed; a name it
+/// cannot have is said in an alert, and the name stays. On the Mac a title of SwiftUI cannot be
+/// edited, and FocusState does not follow a field in the toolbar: the field itself says when
+/// its editing ends.
+struct SessionNameField: View {
+    let name: String
+    let rename: (String) async -> Bool
+    @State private var draft: String
+    @State private var isRenaming = false
+
+    init(name: String, rename: @escaping (String) async -> Bool) {
+        self.name = name
+        self.rename = rename
+        _draft = State(initialValue: name)
+    }
+
+    var body: some View {
+        TextField("Session Name", text: $draft, onEditingChanged: { editing in if !editing { save() } })
+            .onSubmit(save)
+            .textFieldStyle(.plain)
+            .font(.title3.weight(.semibold))
+            .foregroundStyle(Color(nsColor: .labelColor))  // .primary is dimmed in the toolbar
+            .fixedSize()
+            .padding(.leading, Metrics.Spacing.large)  // where the title of the window stands
+            .help("Rename This Session")
+    }
+
+    private func save() {
+        guard !isRenaming, draft != name else { return }
+        isRenaming = true
+        Task {
+            _ = await rename(draft)
+            draft = name  // renamed, the session is shown anew under its new name
+            isRenaming = false
+        }
     }
 }

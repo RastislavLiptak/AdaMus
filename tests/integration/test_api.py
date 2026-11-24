@@ -87,9 +87,11 @@ class TestToken:
     def test_nothing_but_the_api_is_served(self, api):
         assert api.client.get("/").status_code == 404
 
-    def test_nothing_can_be_deleted_without_the_token(self, api):
+    def test_nothing_can_be_deleted_or_renamed_without_the_token(self, api):
         bare = TestClient(api.client.app)
         assert bare.delete(f"/api/sessions/{api.session_id}").status_code == 404
+        renamed = bare.patch(f"/api/sessions/{api.session_id}", json={"name": "y"})
+        assert renamed.status_code == 404
         assert api.services.catalogue.folder(api.session_id) is not None
 
 
@@ -171,6 +173,11 @@ class TestSessions:
             404,
             "no session 20200101-000000_x",
         )
+        renamed = api.client.patch("/api/sessions/20200101-000000_x", json={"name": "y"})
+        assert (renamed.status_code, renamed.json()["detail"]) == (
+            404,
+            "no session 20200101-000000_x",
+        )
 
     def test_each_session_shows_its_own_timeline_one_after_another(self, api, played):  # noqa: F811
         other = "20261110-160000_S02"
@@ -232,6 +239,44 @@ class TestSessions:
         )
         assert api.client.get(f"/api/sessions/{api.session_id}/timeline").status_code == 404
 
+    def test_renaming_a_session(self, api):
+        api.client.get(f"/api/sessions/{api.session_id}/timeline")
+        started = api.session_id.partition("_")[0]
+        renamed = api.client.patch(f"/api/sessions/{api.session_id}", json={"name": " Karel 8 "})
+        assert renamed.json() == {"id": f"{started}_Karel 8", "name": "Karel 8"}
+        page = api.client.get("/api/sessions", params={"offset": 0, "limit": 5}).json()
+        assert page["sessions"] == [renamed.json()]
+        new = renamed.json()["id"]
+        assert api.client.get(f"/api/sessions/{new}/timeline").status_code == 200
+        assert api.client.get(f"/api/sessions/{new}/dashboard").status_code == 200
+        assert api.client.get(f"/api/sessions/{api.session_id}/timeline").status_code == 404
+
+    @pytest.mark.parametrize("name", ["", "   ", "a/b", "a:b", "x" * 51])
+    def test_a_session_cannot_be_given_a_name_no_folder_can_have(self, api, name):
+        refused = api.client.patch(f"/api/sessions/{api.session_id}", json={"name": name})
+        assert (refused.status_code, refused.json()["detail"]) == (422, NAME_HINT)
+        assert api.services.catalogue.folder(api.session_id) is not None
+
+    def test_a_name_a_session_of_the_same_start_has_is_refused(self, api):
+        taken = api.session_id.partition("_")[0] + "_taken"
+        (api.folder / "sessions" / taken).mkdir()
+        refused = api.client.patch(f"/api/sessions/{api.session_id}", json={"name": "taken"})
+        assert (refused.status_code, refused.json()["detail"]) == (
+            409,
+            "A session that started at the same time is called taken.",
+        )
+
+    def test_a_folder_that_cannot_be_renamed_says_why_without_its_path(self, api, monkeypatch):
+        def refused(session_id, name):
+            raise PermissionError(13, "Permission denied", str(api.folder))
+
+        monkeypatch.setattr(api.services.catalogue, "rename", refused)
+        answer = api.client.patch(f"/api/sessions/{api.session_id}", json={"name": "y"})
+        assert (answer.status_code, answer.json()["detail"]) == (
+            422,
+            "The session could not be renamed: Permission denied.",
+        )
+
     def test_a_session_stored_again_where_a_deleted_one_was_is_read_anew(self, api, played):  # noqa: F811
         folder = api.folder / "sessions" / api.session_id
         assert api.client.get(f"/api/sessions/{api.session_id}/timeline").status_code == 200
@@ -242,7 +287,7 @@ class TestSessions:
 
     # starting: its folder is being made; finishing: its recording stored, its metrics computed
     @pytest.mark.parametrize("phase", ["starting", "running", "finishing"])
-    def test_a_session_not_finished_yet_cannot_be_deleted(self, api, monkeypatch, phase):
+    def test_a_session_not_finished_yet_cannot_be_deleted_or_renamed(self, api, monkeypatch, phase):
         running = api.runner.state().model_copy(
             update={"phase": phase, "session_id": api.session_id}
         )
@@ -252,6 +297,12 @@ class TestSessions:
             409,
             "the session is still running",
         )
+        renamed = api.client.patch(f"/api/sessions/{api.session_id}", json={"name": "y"})
+        assert (renamed.status_code, renamed.json()["detail"]) == (
+            409,
+            "the session is still running",
+        )
+        assert api.services.catalogue.folder(api.session_id) is not None
         dashboard = api.client.get(f"/api/sessions/{api.session_id}/dashboard").json()
         assert dashboard["pending"] == PENDING
 

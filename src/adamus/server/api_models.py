@@ -16,6 +16,10 @@ class SessionSummary(BaseModel):
     name: str  # the name the operator gave it
 
 
+class SessionRename(BaseModel):
+    name: str  # the session is to be called by from now on
+
+
 class SessionPage(BaseModel):
     total: int  # sessions in all
     sessions: list[SessionSummary]  # newest first

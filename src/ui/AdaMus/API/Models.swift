@@ -9,6 +9,11 @@ struct SessionSummary: Decodable, Identifiable, Hashable {
     let name: String
 }
 
+/// What a session is to be called from now on.
+struct SessionRename: Encodable {
+    let name: String
+}
+
 struct SessionPage: Decodable {
     let total: Int
     let sessions: [SessionSummary]

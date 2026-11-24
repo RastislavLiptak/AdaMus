@@ -18,9 +18,11 @@ struct WorkspaceView: View {
                     min: Metrics.sidebar.min, ideal: Metrics.sidebar.ideal, max: Metrics.sidebar.max)
         } detail: {
             if let session = workspace.session {
-                SessionView(session: session, showsInspector: $workspace.showsInspector) {
-                    workspace.askToDelete(session.summary.id)
-                }
+                SessionView(
+                    session: session, showsInspector: $workspace.showsInspector,
+                    rename: { await workspace.rename(session.summary, to: $0) },
+                    askToDelete: { workspace.askToDelete(session.summary.id) }
+                )
                 .id(session.summary.id)
             } else if let problem = workspace.listProblem, workspace.sessions.isEmpty {
                 ContentUnavailableView {

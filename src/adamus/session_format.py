@@ -127,6 +127,11 @@ def folder_name(started: float, name: str) -> str:
     return time.strftime(FOLDER_TIME, time.localtime(started)) + NAME_SEPARATOR + name
 
 
+def renamed(folder: str, name: str) -> str:
+    """The folder of a session given another name: the time it started stays."""
+    return folder.partition(NAME_SEPARATOR)[0] + NAME_SEPARATOR + name
+
+
 def name_of(folder: Path) -> str:
     """The name the session was given, from its folder."""
     return folder.name.split(NAME_SEPARATOR, 1)[-1]

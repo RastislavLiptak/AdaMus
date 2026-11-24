@@ -1,8 +1,12 @@
-"""server.session_catalogue: the stored sessions, newest first, a page at a time; deletion."""
+"""server.session_catalogue: the stored sessions, newest first, a page at a time; renaming,
+deletion."""
+
+from pathlib import Path
 
 import pytest
 
 from adamus import constants as c
+from adamus.errors import AdamusError
 from adamus.server.session_catalogue import SessionCatalogue
 
 FOLDERS = [
@@ -82,3 +86,62 @@ def test_deleting_what_is_not_a_session_deletes_nothing(catalogue, tmp_path):
     catalogue.delete("..")
     assert (tmp_path / "sessions" / "unsorted").is_dir()
     assert catalogue.page(0, 10).total == 3
+
+
+def test_renaming_renames_the_session_and_its_own_recording(catalogue, tmp_path):
+    own = tmp_path / "data" / c.OWN_RECORDINGS / FOLDERS[0]
+    own.mkdir(parents=True)
+    (own / "eeg.csv").write_text("AF7")
+    summary = catalogue.rename(FOLDERS[0], "Karel 8")
+    assert (summary.id, summary.name) == ("20261110-150412_Karel 8", "Karel 8")
+    assert (tmp_path / "sessions" / summary.id / "meta.json").read_text() == "{}"
+    assert (catalogue.own_recording(summary.id) / "eeg.csv").read_text() == "AF7"
+    assert catalogue.folder(FOLDERS[0]) is None and catalogue.own_recording(FOLDERS[0]) is None
+    assert [s.name for s in catalogue.page(0, 10).sessions] == ["third", "second_take", "Karel 8"]
+
+
+def test_a_session_without_its_own_recording_is_renamed_all_the_same(catalogue, tmp_path):
+    catalogue.rename(FOLDERS[2], "renamed")
+    assert (
+        catalogue.folder("20261112-120000_renamed")
+        == tmp_path / "sessions" / "20261112-120000_renamed"
+    )
+    assert catalogue.own_recording("20261112-120000_renamed") is None
+
+
+def test_only_a_letter_of_another_size_may_be_changed(catalogue):
+    assert catalogue.rename(FOLDERS[2], "Third").id == "20261112-120000_Third"
+    assert [s.name for s in catalogue.page(0, 10).sessions][0] == "Third"
+
+
+def test_a_name_another_session_of_the_same_start_has_is_refused(catalogue, tmp_path):
+    (tmp_path / "sessions" / "20261110-150412_taken").mkdir()
+    with pytest.raises(AdamusError, match="started at the same time is called taken"):
+        catalogue.rename(FOLDERS[0], "taken")
+    assert catalogue.folder(FOLDERS[0]) is not None
+
+
+def test_an_own_recording_of_that_name_also_refuses_it(catalogue, tmp_path):
+    (tmp_path / "data" / c.OWN_RECORDINGS / "20261110-150412_taken").mkdir(parents=True)
+    with pytest.raises(AdamusError):
+        catalogue.rename(FOLDERS[0], "taken")
+    assert catalogue.folder(FOLDERS[0]) is not None
+
+
+def test_the_session_keeps_its_name_when_its_own_recording_cannot_move(
+    catalogue, tmp_path, monkeypatch
+):
+    own = tmp_path / "data" / c.OWN_RECORDINGS / FOLDERS[0]
+    own.mkdir(parents=True)
+    rename = Path.rename
+
+    def refused_for_the_recording(self, target):
+        if self == own:
+            raise PermissionError(13, "Permission denied")
+        return rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", refused_for_the_recording)
+    with pytest.raises(PermissionError):
+        catalogue.rename(FOLDERS[0], "new")
+    assert catalogue.folder(FOLDERS[0]) is not None and own.is_dir()
+    assert catalogue.folder("20261110-150412_new") is None

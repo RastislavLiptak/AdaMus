@@ -1,5 +1,5 @@
 // What the window works with once the program is ready: the sessions, the one chosen, a new
-// session being made, and a deletion being confirmed.
+// session being made, a session renamed, and a deletion being confirmed.
 import Foundation
 import Observation
 
@@ -62,6 +62,24 @@ final class Workspace {
     func sessionEnded(_ id: String) async {
         await load()
         selection = id
+    }
+
+    /// The session called ``name`` from now on; chosen, it is opened again under its new id, on
+    /// the same part. False when the program refused, which an alert says why.
+    func rename(_ session: SessionSummary, to name: String) async -> Bool {
+        do {
+            let renamed = try await api.rename(session.id, to: name)
+            sessions = sessions.map { $0.id == session.id ? renamed : $0 }  // its place stays: by its start
+            if selection == session.id {
+                let part = self.session?.part
+                selection = renamed.id
+                if let part { self.session?.part = part }
+            }
+            return true
+        } catch {
+            problem = error.localizedDescription
+            return false
+        }
     }
 
     func askToDelete(_ id: SessionSummary.ID?) {

@@ -2,15 +2,16 @@
 
 A session is known by its folder, which is also its id; the app shows only the
 name the operator gave it. Deleting a session deletes its folder and the recording of
-what the headset delivered in it.
+what the headset delivered in it; renaming it renames both, as the name is a part of theirs.
 """
 
 import shutil
 from pathlib import Path
 
 from adamus import constants as c
+from adamus.errors import AdamusError
 from adamus.server.api_models import SessionPage, SessionSummary
-from adamus.session_format import is_session_folder, name_of
+from adamus.session_format import is_session_folder, name_of, renamed
 
 
 class SessionCatalogue:
@@ -42,6 +43,28 @@ class SessionCatalogue:
         for folder in (self.folder(session_id), self.own_recording(session_id)):
             if folder is not None:
                 shutil.rmtree(folder)
+
+    def rename(self, session_id: str, name: str) -> SessionSummary:
+        """Call the session ``name`` from now on; AdamusError says why it cannot be. Should its
+        own recording not move, its folder moves back: the two keep the same name."""
+        new_id = renamed(session_id, name)
+        roots = (self._sessions_root, self._datasets_root / c.OWN_RECORDINGS)
+        found = (self.folder(session_id), self.own_recording(session_id))
+        for root, old in zip(roots, found, strict=True):
+            new = root / new_id  # a recording left there must not become the session's
+            if new.exists() and (old is None or not new.samefile(old)):  # same: case changed
+                raise AdamusError(f"A session that started at the same time is called {name}.")
+        moves = [(old, old.with_name(new_id)) for old in found if old is not None]
+        moved: list[tuple[Path, Path]] = []
+        try:
+            for old, new in moves:
+                old.rename(new)
+                moved.append((old, new))
+        except OSError:
+            for old, new in reversed(moved):
+                new.rename(old)
+            raise
+        return SessionSummary(id=new_id, name=name)
 
     def _folders(self) -> list[Path]:
         if not self._sessions_root.is_dir():
