@@ -10,6 +10,7 @@ from adamus.server.api_models import SessionRequest
 from adamus.server.new_session import NAME_HINT, NewSession, missing_warning
 from adamus.session_format import SESSION_NAME
 from tests.support.finished_sessions import synthetic_signals
+from tests.support.stand_in_devices import SPEAKERS
 from tests.support.stand_in_machine import StandInMachine
 from tests.support.stand_in_preflight import Checked
 from tests.support.synthetic_dataset import write_recording
@@ -135,29 +136,39 @@ def test_a_recording_whose_protocol_cannot_be_played_says_why(form, data):
 
 
 def test_a_session_over_a_recording_takes_its_protocol(form, data):
-    prepared = form.prepare(SessionRequest(source_id="dataset:zeta", recording="one", name="S_1"))
+    prepared = form.prepare(
+        SessionRequest(source_id="dataset:zeta", recording="one", name="S_1", output=SPEAKERS)
+    )
     assert prepared.name == "S_1" and prepared.recording == data / "zeta" / "one"
     assert [(b.label, b.duration_s) for b in prepared.config.protocol] == SHORT
     assert prepared.source.label == "zeta"
 
 
 def test_a_session_with_the_headset_takes_the_configuration(form):
-    prepared = form.prepare(SessionRequest(source_id="headset:Muse 2", recording=None, name="L"))
+    prepared = form.prepare(
+        SessionRequest(source_id="headset:Muse 2", recording=None, name="L", output=SPEAKERS)
+    )
     assert prepared.recording is None and len(prepared.config.protocol) == 9
 
 
 @pytest.mark.parametrize("name", ["", "  ", "a/b"])
 def test_a_name_outside_the_rule_is_refused(form, name):
     with pytest.raises(AdamusError, match=NAME_HINT):
-        form.prepare(SessionRequest(source_id="headset:Muse 2", recording=None, name=name))
+        form.prepare(
+            SessionRequest(source_id="headset:Muse 2", recording=None, name=name, output=SPEAKERS)
+        )
 
 
 def test_a_name_is_taken_without_the_spaces_at_its_ends(form):
-    request = SessionRequest(source_id="headset:Muse 2", recording=None, name=" Karel Jedlička 8 ")
+    request = SessionRequest(
+        source_id="headset:Muse 2", recording=None, name=" Karel Jedlička 8 ", output=SPEAKERS
+    )
     assert form.prepare(request).name == "Karel Jedlička 8"
 
 
 def test_a_source_that_cannot_run_is_refused(form):
-    request = SessionRequest(source_id="dataset:frontal", recording="only_fp", name="S")
+    request = SessionRequest(
+        source_id="dataset:frontal", recording="only_fp", name="S", output=SPEAKERS
+    )
     with pytest.raises(AdamusError, match="The detector needs at least one"):
         form.prepare(request)

@@ -18,7 +18,10 @@ load the assets, STAND_IN_PD_DIES_ON_MODEL=1 exits when it is told to load a mod
 STAND_IN_PD_HANGS=1 neither quits when its client disconnects nor ends when it is terminated,
 STAND_IN_PD_CHATTY=1 also prints to stdout and writes bytes that are not text to stderr,
 STAND_IN_PD_LAST_WORDS=<lines> prints that many lines when it quits or is terminated,
-STAND_IN_PD_NO_VERSION=1 fails when asked for its version.
+STAND_IN_PD_NO_VERSION=1 fails when asked for its version,
+STAND_IN_PD_OUTPUTS=<names separated by |> are the audio outputs it lists (pd -listdev),
+STAND_IN_PD_CANNOT_PLAY=1 says it could not open the output it was given,
+STAND_IN_PD_SILENT_PROMPTS=1 never says the music of a prompt is ready.
 """
 
 import os
@@ -41,6 +44,8 @@ TONE_HZ, TONE_LEVEL = 220, 0.02
 CLICK_LEVEL, CLICK_SAMPLES = 0.6, 200
 MORE_CLICKS = 7  # per second at full focus: 1 to 8 clicks per second
 FULL_SCALE = 32767  # of 16-bit samples
+OUTPUTS = ("Stand-in TV", "Stand-in Speakers")  # it lists, unless told others
+NAMES_APART = "|"  # in STAND_IN_PD_OUTPUTS
 
 
 def log(text: str) -> None:
@@ -147,6 +152,8 @@ def handle(atoms: list[str], recorder: Recorder) -> None:
     elif head == "prompt":
         if int(float(args[0])) == 1:
             recorder.focus = float(args[-1])
+        if not os.environ.get("STAND_IN_PD_SILENT_PROMPTS"):  # as the engine says it, on stdout
+            print("[MagentaRT] Combined Prompt (2) tokens: 1 2 3 4 5 6", flush=True)
     elif head == "rec":
         actions = {"open": recorder.open, "start": recorder.start, "stop": recorder.stop}
         actions[args[0]](*args[1:])
@@ -176,8 +183,25 @@ def ended_by_sigterm(*_) -> None:
     sys.exit(0)
 
 
+def list_devices() -> None:
+    """What Pd prints of the audio devices of the Mac, as Pd on the Mac prints it."""
+    given = os.environ.get("STAND_IN_PD_OUTPUTS")
+    outputs = given.split(NAMES_APART) if given is not None else OUTPUTS
+    log("audio input devices:")
+    log("0. Core Audio: Stand-in Microphone")
+    log("audio output devices:")
+    for number, name in enumerate(filter(None, outputs)):
+        log(f"{number}. Core Audio: {name}")
+    log("API number 4")
+    log("")
+    log("no MIDI input devices found")
+
+
 def report_start() -> None:
     """What Pd and mrt2~ print when the patch opens."""
+    if os.environ.get("STAND_IN_PD_CANNOT_PLAY"):
+        number = sys.argv[sys.argv.index("-audiooutdev") + 1]
+        log(f"error: audio output device number ({number}) out of range")
     if os.environ.get("STAND_IN_PD_CHATTY"):
         print("pd: a line on stdout", flush=True)
         sys.stderr.buffer.write(b"pd: not text \xff\xfe")
@@ -246,6 +270,9 @@ def main() -> int:
         if os.environ.get("STAND_IN_PD_NO_VERSION"):
             return 1
         log("Pd-0.57-0 (stand-in)")
+        return 0
+    if "-listdev" in sys.argv:
+        list_devices()
         return 0
     patch = Path(sys.argv[-1]).read_text()
     found = re.search(r"listen (\d+)", patch)

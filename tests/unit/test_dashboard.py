@@ -80,7 +80,7 @@ DETAILS = {
         "Steps Recorded", "Record Complete",
     ],
     "Music": [
-        "Control Latency (Median)", "Control Latency (95th Percentile)",
+        "Audio Output", "Control Latency (Median)", "Control Latency (95th Percentile)",
         "Control Latency (Maximum)", "Interval Between Steps (Median)",
         "Interval Between Steps (95th Percentile)", "Music Following Focus (Spearman)",
         "Music Lag", "Time to Audible Focus On", "Time to Audible Focus Off", "Audio Dropouts",
@@ -112,6 +112,27 @@ def test_the_details_name_every_fact_and_a_session_with_its_metrics_knows_each(d
         "Yes",
         "text",
     )  # the played one is whole
+
+
+def test_the_audio_output_is_that_of_the_record_and_unknown_of_older_sessions(copied):
+    meta = json.loads((copied / c.FILE_META).read_text())
+    meta["audio_output"] = "AirPods"
+    (copied / c.FILE_META).write_text(json.dumps(meta))
+    assert facts(dashboard_of(copied, None, False), "Music")["Audio Output"] == ("AirPods", "text")
+    del meta["audio_output"]
+    (copied / c.FILE_META).write_text(json.dumps(meta))
+    assert facts(dashboard_of(copied, None, False), "Music")["Audio Output"] == (None, "text")
+
+
+def test_an_output_disconnected_while_the_session_ran_is_said_when(copied):
+    """A disconnection logged before the session started was of the time between sessions."""
+    actions = ["AUDIO_OUTPUT_LOST", "PD_STARTED", "SESSION_STARTED", "AUDIO_OUTPUT_LOST"]
+    lines = [{"t": 100.0 + k, "type": kind} for k, kind in enumerate(actions)]
+    (copied / c.FILE_ACTIVITY).write_text("".join(json.dumps(line) + "\n" for line in lines))
+    music = facts(dashboard_of(copied, None, False), "Music")
+    assert music["Audio Output Disconnected"] == (103.0, "datetime")
+    (copied / c.FILE_ACTIVITY).write_text("".join(json.dumps(line) + "\n" for line in lines[:3]))
+    assert "Audio Output Disconnected" not in facts(dashboard_of(copied, None, False), "Music")
 
 
 def test_electrodes_the_source_lacked_are_named_as_recorded_as_zeros(copied):

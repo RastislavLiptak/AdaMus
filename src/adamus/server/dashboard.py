@@ -115,7 +115,7 @@ def readable_dashboard(
             blocks_section(session, metrics),
             detection_section(statistics, metrics),
             signal_section(session, statistics, metrics),
-            music_section(metrics),
+            music_section(session, metrics, activity),
             processing_section(metrics),
             configuration_section(session),
             software_section(session),

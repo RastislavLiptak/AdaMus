@@ -1,5 +1,6 @@
 """server.session_runner: the sessions the app asks for, run in the main thread."""
 
+import json
 import threading
 
 import pytest
@@ -14,6 +15,7 @@ from adamus.server.new_session import NewSession
 from adamus.server.session_runner import SessionRunner
 from adamus.session_format import read_jsonl
 from tests.support.finished_sessions import synthetic_signals
+from tests.support.stand_in_devices import SPEAKERS, TV
 from tests.support.stand_in_machine import StandInMachine
 from tests.support.stand_in_preflight import Checked
 from tests.support.synthetic_dataset import write_recording
@@ -37,8 +39,8 @@ class Run:
         self.form = NewSession(self.checked, self.machine, ActivityLog())
         self.form.look_for_headset()
 
-    def ask(self, source="dataset:synthetic", recording="short", name="S01"):
-        request = SessionRequest(source_id=source, recording=recording, name=name)
+    def ask(self, source="dataset:synthetic", recording="short", name="S01", output=SPEAKERS):
+        request = SessionRequest(source_id=source, recording=recording, name=name, output=output)
         return self.runner.request(self.form.prepare(request))
 
     def serve_one(self, while_running=None):
@@ -212,8 +214,7 @@ def test_the_app_ending_stops_the_running_session_says_so_and_stops_pd_first(
     run, tmp_path, monkeypatch
 ):
     """Pd goes at once, not after the storing and the analysis, which may take a while."""
-    generator = run.checked.generator
-    generator.start()
+    generator = run.checked.generator  # started by the checks, as the program starts it
     real_analyze = session_runner.analyze
     stopped_when_analysed = []
 
@@ -241,7 +242,7 @@ def test_ctrl_c_during_a_session_quits_after_keeping_the_recording(run, tmp_path
 
     def interrupted(self):
         result = real_run(self)
-        return session_module.SessionResult(result.directory, result.reason, True)
+        return session_module.SessionResult(result.directory, result.reason, True, None)
 
     monkeypatch.setattr(session_module.Session, "run", interrupted)
     run.ask(source="headset:Muse 2", recording=None, name="live")
@@ -301,3 +302,63 @@ def test_what_follows_a_finished_session_belongs_to_the_next_one(run, tmp_path):
     run.activity.write("PREFLIGHT")
     assert run.actions(tmp_path / "sessions" / state.session_id)[-1] != "PREFLIGHT"
     assert [entry["type"] for entry in run.activity.waiting] == ["PREFLIGHT"]
+
+
+def test_a_session_on_another_output_starts_the_generator_again_there_first(run, tmp_path):
+    generator = run.checked.generator
+    run.ask(output=TV)
+    folder = tmp_path / "sessions" / run.serve_one().session_id
+    assert (generator.outputs, generator.stopped, generator.output) == ([SPEAKERS, TV], 1, TV)
+    assert json.loads((folder / c.FILE_META).read_text())["audio_output"] == TV
+
+
+def test_a_session_on_the_output_the_music_plays_on_starts_nothing_again(run):
+    run.ask()
+    run.serve_one()
+    assert run.checked.generator.outputs == [SPEAKERS]
+
+
+def test_a_session_on_an_output_that_was_disconnected_starts_the_generator_again(run):
+    run.checked.generator.output_lost = True  # and is back, as the form offers it again
+    run.ask()
+    run.serve_one()
+    assert run.checked.generator.outputs == [SPEAKERS, SPEAKERS]
+
+
+def test_a_generator_that_cannot_start_on_the_output_starts_no_session(run, tmp_path):
+    run.checked.generator._fail_to_start = ("Pd could not play on TV", "Pure Data printed:")
+    run.ask(output=TV)
+    state = run.serve_one()
+    assert (state.phase, state.session_id) == ("idle", None)
+    assert state.problem == "Pd could not play on TV\nPure Data printed:"
+    assert not (tmp_path / "sessions").exists()
+    assert [entry["type"] for entry in run.activity.waiting] == [
+        "SESSION_REQUESTED",
+        "START_FAILED",
+    ]
+
+
+def test_a_session_whose_output_is_disconnected_ends_with_an_error_the_operator_is_told(
+    run, tmp_path
+):
+    """The music heard nowhere, the session is of no use: it ends, its recording kept."""
+    generator = run.checked.generator
+    run.machine.paced = True
+    run.ask(source="headset:Muse 2", recording=None, name="live")
+
+    def disconnected():
+        generator.output_lost = True
+
+    state = run.serve_one(while_running=disconnected)
+    expected = f"The audio output {SPEAKERS} was disconnected, so the music could not be heard."
+    assert (state.phase, state.problem) == ("idle", expected)
+    folder = tmp_path / "sessions" / state.session_id
+    events = read_jsonl(folder / c.FILE_EVENTS)
+    assert [(e["where"], e["message"]) for e in events if e["type"] == "ERROR"] == [
+        ("generator", expected)
+    ]
+    assert events[-1]["reason"] == "error"
+    assert generator.messages[-1] == "rec stop;"  # the recording of the music is closed
+    assert (
+        tmp_path / c.DATASETS_DIR / c.OWN_RECORDINGS / folder.name / c.FILE_DATASET_EEG
+    ).is_file()

@@ -16,11 +16,13 @@ from adamus.activity_log import (
     ACTION_APP_ENDED,
     ACTION_PROGRAM_STOPPED,
     ACTION_RECORDING_NOT_STORED,
+    ACTION_SESSION_STARTED,
 )
 from adamus.datasets import person_of
 from adamus.evaluation.metrics import PERCENTILE_KEY
 from adamus.evaluation.session_reader import SessionFolder
 from adamus.evaluation.session_statistics import OK, FocusStatistics, Statistics
+from adamus.realtime.music_generator import REPORT_OUTPUT_LOST
 from adamus.server.api_models import (
     Fact,
     Format,
@@ -232,12 +234,25 @@ def signal_section(
     return Section(title="Signal", items=items)
 
 
-def music_section(metrics: dict[str, Any]) -> Section:
-    """How quickly the music was told, and how it followed."""
+def output_lost_at(activity: list[dict[str, Any]]) -> float | None:
+    """When the audio output was disconnected while the session ran, if it was."""
+    started = [k for k, entry in enumerate(activity) if entry["type"] == ACTION_SESSION_STARTED]
+    after = activity[started[0] :] if started else []
+    lost = [entry["t"] for entry in after if entry["type"] == REPORT_OUTPUT_LOST]
+    return lost[0] if lost else None
+
+
+def music_section(
+    session: SessionFolder, metrics: dict[str, Any], activity: list[dict[str, Any]]
+) -> Section:
+    """Where the music played, how quickly it was told, and how it followed."""
     latency, interval = part(metrics, "control_latency_s"), part(metrics, "step_interval_s")
     response, total = part(metrics, "music_response"), part(metrics, "total_response_s")
     dropouts = part(metrics, "audio_dropouts")
+    lost = output_lost_at(activity)
     items: list[Item] = [
+        fact("Audio Output", session.meta.get("audio_output")),
+        *([fact("Audio Output Disconnected", lost, "datetime")] if lost is not None else []),
         *spread_facts("Control Latency", latency, ("median", PERCENTILE_KEY, "max")),
         *spread_facts("Interval Between Steps", interval, ("median", PERCENTILE_KEY)),
         fact("Music Following Focus (Spearman)", response.get("rho"), "decimal"),

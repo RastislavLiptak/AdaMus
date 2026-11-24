@@ -1,5 +1,5 @@
 // A new session, in a sheet over the window (HIG "Sheets"): the form, in the order the session
-// needs it (source, recording, name), then the session as it runs, with a button that stops it.
+// needs it (source, audio output, recording, name), then the session as it runs, with a button that stops it.
 // Once it has ended and been analysed, the sheet closes on its overview.
 import SwiftUI
 
@@ -49,7 +49,7 @@ struct NewSessionSheet: View {
             dismiss()
         case .failed(let why):
             self.run = nil  // back to the form, which says what went wrong
-            model.reportRun(problem: why)
+            model.reportRun(problem: why, started: run.state.sessionId != nil)
             failed()
         }
     }
@@ -63,6 +63,7 @@ struct SessionFormView: View {
         Form {
             Section {
                 sourcePicker
+                outputPicker
                 if let recordings = model.source?.recordings, !recordings.isEmpty {
                     Picker(
                         "Recording", selection: Binding(get: { model.recording }, set: { model.chosenRecording = $0 })
@@ -126,6 +127,40 @@ struct SessionFormView: View {
         }
     }
 
+    @ViewBuilder private var outputPicker: some View {
+        LabeledContent("Audio Output") {
+            HStack {
+                if let outputs = model.outputs, outputs.outputs.isEmpty {
+                    Text(outputs.hint).foregroundStyle(.secondary)
+                } else {
+                    Picker(
+                        "Audio Output", selection: Binding(get: { model.output?.id }, set: { model.chosenOutput = $0 })
+                    ) {
+                        ForEach(model.outputs?.outputs ?? []) { Text($0.title).tag(Optional($0.id)) }
+                    }
+                    .labelsHidden()
+                }
+                lookForOutputs
+            }
+        }
+    }
+
+    /// The button that looks for the audio outputs again; while they are read, a spinner in its
+    /// place.
+    @ViewBuilder private var lookForOutputs: some View {
+        if model.lookingForOutputs {
+            ProgressView()
+                .controlSize(.small)
+                .help("Looking for audio outputs")
+        } else {
+            Button("Look for Audio Outputs Again", systemImage: "arrow.clockwise") {
+                Task { await model.lookForOutputs() }
+            }
+            .labelStyle(.iconOnly)
+            .help("Look for audio outputs again")
+        }
+    }
+
     /// The button that looks for the headset again; while it looks, a spinner in its place
     /// (HIG "Progress indicators": by the control that began it, without a label).
     @ViewBuilder private var lookAgain: some View {
@@ -135,7 +170,7 @@ struct SessionFormView: View {
                 .help("Looking for the headset")
         } else {
             Button("Look for the Headset Again", systemImage: "arrow.clockwise") {
-                Task { await model.open() }
+                Task { await model.lookForSources() }
             }
             .labelStyle(.iconOnly)
             .help("Look for the headset again")

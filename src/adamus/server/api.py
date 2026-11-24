@@ -19,6 +19,7 @@ from adamus import constants as c
 from adamus.errors import AdamusError
 from adamus.evaluation.session_reader import load_session_folder
 from adamus.server.api_models import (
+    AudioOutputs,
     Dashboard,
     Electrode,
     Excerpt,
@@ -245,6 +246,13 @@ def add_new_session_routes(api: FastAPI) -> None:
     @api.get("/api/sources/{source_id}/check")
     def check(services: Using, source_id: str, recording: str | None = None) -> SourceCheck:
         return services.new_session.check(source_id, recording)
+
+    @api.get("/api/audio-outputs")  # read again each time: headphones come and go
+    def audio_outputs(services: Using) -> AudioOutputs:
+        try:
+            return services.new_session.audio_outputs()
+        except AdamusError as problem:
+            raise HTTPException(INVALID, str(problem)) from problem
 
 
 def add_run_routes(api: FastAPI) -> None:

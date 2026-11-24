@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from adamus import constants as c
 from adamus.activity_log import ActivityLog
+from adamus.audio_outputs import AudioOutput
 from adamus.evaluation.session_reader import load_session_folder
 from adamus.server.api import MAX_PAGE, TOKEN_HEADER, Services, create_api, create_app
 from adamus.server.dashboard import PENDING
@@ -23,6 +24,7 @@ from adamus.server.session_catalogue import SessionCatalogue
 from adamus.server.session_runner import SessionRunner
 from adamus.server.timeline import session_tracks
 from tests.support.finished_sessions import synthetic_signals
+from tests.support.stand_in_devices import SPEAKERS, TV
 from tests.support.stand_in_machine import StandInMachine
 from tests.support.stand_in_preflight import Checked
 from tests.support.synthetic_dataset import write_recording
@@ -39,7 +41,7 @@ class Api:
         write_recording(folder / "data" / "synthetic" / "short", synthetic_signals(SHORT), SHORT)
         self.checked = Checked()
         self.activity = ActivityLog()
-        machine = StandInMachine(folder / "sessions", folder / "data")
+        self.machine = machine = StandInMachine(folder / "sessions", folder / "data")
         self.runner = SessionRunner(self.checked, machine, self.activity, threading.Event().is_set)
         self.services = Services(
             catalogue=SessionCatalogue(folder / "sessions", folder / "data"),
@@ -269,7 +271,12 @@ class TestNewSession:
         assert check.json() == {"warning": None, "problem": None}
 
     def test_a_session_is_asked_for_once(self, api):
-        request = {"source_id": "dataset:synthetic", "recording": "short", "name": "S02"}
+        request = {
+            "source_id": "dataset:synthetic",
+            "recording": "short",
+            "name": "S02",
+            "output": SPEAKERS,
+        }
         first = api.client.post("/api/run", json=request)
         assert first.status_code == 202
         assert first.json() == {"run": 1, "phase": "starting", "session_id": None, "problem": None}
@@ -288,12 +295,17 @@ class TestNewSession:
     def test_a_session_with_the_headset_is_asked_for_without_a_recording(self, api):
         """As the app asks: a value it does not have it leaves out."""
         api.client.post("/api/new-session/refresh")  # the headset found
-        request = {"source_id": "headset:Muse 2", "name": "live"}
+        request = {"source_id": "headset:Muse 2", "name": "live", "output": SPEAKERS}
         assert api.client.post("/api/run", json=request).status_code == 202
 
     def test_while_the_last_session_is_finished_a_new_one_waits_for_it(self, api):
         api.runner._set("finishing")  # its recording stored, its metrics computed
-        request = {"source_id": "dataset:synthetic", "recording": "short", "name": "S02"}
+        request = {
+            "source_id": "dataset:synthetic",
+            "recording": "short",
+            "name": "S02",
+            "output": SPEAKERS,
+        }
         for answer in (api.client.post("/api/run", json=request),
                        api.client.post("/api/new-session/refresh")):  # fmt: skip
             assert answer.status_code == 409
@@ -302,7 +314,12 @@ class TestNewSession:
             )
 
     def test_a_request_that_cannot_run_says_why(self, api):
-        request = {"source_id": "dataset:synthetic", "recording": "short", "name": "a/b"}
+        request = {
+            "source_id": "dataset:synthetic",
+            "recording": "short",
+            "name": "a/b",
+            "output": SPEAKERS,
+        }
         response = api.client.post("/api/run", json=request)
         assert (response.status_code, response.json()["detail"]) == (422, NAME_HINT)
         assert api.client.get("/api/run").json()["run"] == 0
@@ -315,12 +332,61 @@ class TestNewSession:
     def test_while_the_headset_is_looked_for_it_cannot_be_looked_for_or_used(self, api):
         api.client.post("/api/new-session/refresh")  # found
         api.runner._looking = True  # as while a look takes its seconds
-        headset = {"source_id": "headset:Muse 2", "recording": None, "name": "S02"}
+        headset = {
+            "source_id": "headset:Muse 2",
+            "recording": None,
+            "name": "S02",
+            "output": SPEAKERS,
+        }
         for answer in (api.client.post("/api/new-session/refresh"),
                        api.client.post("/api/run", json=headset)):  # fmt: skip
             assert answer.status_code == 409
             assert (
                 answer.json()["detail"] == "the headset is being looked for: try again in a moment"
             )
-        recording = {"source_id": "dataset:synthetic", "recording": "short", "name": "S02"}
+        recording = {
+            "source_id": "dataset:synthetic",
+            "recording": "short",
+            "name": "S02",
+            "output": SPEAKERS,
+        }
         assert api.client.post("/api/run", json=recording).status_code == 202
+
+
+def recording_request(output=SPEAKERS):
+    return {"source_id": "dataset:synthetic", "recording": "short", "name": "S02", "output": output}
+
+
+class TestAudioOutput:
+    """The music plays on the output asked for with the session: at first the system's."""
+
+    def test_the_outputs_of_the_mac_and_the_one_the_system_plays_on(self, api):
+        outputs = api.client.get("/api/audio-outputs").json()
+        assert outputs["outputs"] == [{"id": TV, "title": TV}, {"id": SPEAKERS, "title": SPEAKERS}]
+        assert outputs["system"] == SPEAKERS and outputs["hint"]
+
+    def test_a_mac_that_plays_on_no_output(self, api):
+        api.machine.audio, api.machine.outputs = None, []
+        assert api.client.get("/api/audio-outputs").json()["system"] is None
+
+    def test_an_output_that_is_not_connected_is_refused(self, api):
+        answer = api.client.post("/api/run", json=recording_request("AirPods"))
+        assert (answer.status_code, answer.json()["detail"]) == (422, "AirPods is not connected.")
+        assert api.client.get("/api/run").json()["run"] == 0
+
+    def test_an_output_put_away_after_it_was_chosen_starts_no_session(self, api):
+        """Headphones chosen in the form, then put back in their case before Start."""
+        api.machine.outputs = [api.machine.outputs[0]]  # the speakers the music plays on: gone
+        answer = api.client.post("/api/run", json=recording_request(SPEAKERS))
+        assert (answer.status_code, answer.json()["detail"]) == (
+            422, f"{SPEAKERS} is not connected.",
+        )  # fmt: skip
+        assert api.client.get("/api/run").json()["run"] == 0
+        assert api.checked.generator.outputs == [SPEAKERS]  # not started again
+
+    def test_an_output_set_to_another_rate_says_how_to_set_it(self, api):
+        api.machine.outputs[0] = AudioOutput(TV, 44100.0)
+        answer = api.client.post("/api/run", json=recording_request(TV))
+        assert (answer.status_code, answer.json()["detail"]) == (
+            422, f"{TV} plays 44100 Hz. Set it to 48000 Hz in Audio MIDI Setup.",
+        )  # fmt: skip

@@ -34,7 +34,7 @@ struct APIClientTests {
             try await program.api.delete("a")
         }
         await #expect(throws: APIError(message: "Field required. Too long.", status: 422)) {
-            try await program.api.start(SessionRequest(sourceId: "s", recording: nil, name: "n"))
+            try await program.api.start(SessionRequest(sourceId: "s", recording: nil, name: "n", output: "o"))
         }
         await #expect(throws: APIError(message: "AdaMus did not answer as expected.", status: 500)) {
             try await program.api.runState()
@@ -44,11 +44,12 @@ struct APIClientTests {
     @Test func everyCallCarriesTheTokenAndASessionIsAskedForInTheWordsOfTheProgram() async throws {
         let program = StubProgram()
         program.answer("POST api/run", runState(1, "starting"))
-        _ = try await program.api.start(SessionRequest(sourceId: "dataset", recording: "evening", name: "Morning"))
+        let request = SessionRequest(sourceId: "dataset", recording: "evening", name: "Morning", output: "AirPods")
+        _ = try await program.api.start(request)
         let call = try #require(program.made("POST api/run").first)
         #expect(call.token == program.api.token)
         let sent = try JSONSerialization.jsonObject(with: try #require(call.body)) as? [String: String]
-        #expect(sent == ["source_id": "dataset", "recording": "evening", "name": "Morning"])
+        #expect(sent == ["source_id": "dataset", "recording": "evening", "name": "Morning", "output": "AirPods"])
     }
 }
 
@@ -152,15 +153,69 @@ struct NewSessionModelTests {
          "sources_hint": "No source.", "name_pattern": "[a-z]+", "name_hint": "Small letters only."}
         """#
     private static let fine = #"{"warning": null, "problem": null}"#
+    private static let outputs = #"""
+        {"outputs": [{"id": "TV", "title": "TV"}, {"id": "Speakers", "title": "Speakers"}],
+         "system": "Speakers", "hint": "Connect headphones."}
+        """#
 
     private func opened(refresh: (status: Int, body: String) = (200, form)) async -> (StubProgram, NewSessionModel) {
         let program = StubProgram()
         program.answer("GET api/new-session", Self.form)
         program.answer("POST api/new-session/refresh", status: refresh.status, refresh.body)
         program.answer("GET api/sources/headset/check", Self.fine)  // the first source, chosen at first
+        program.answer("GET api/audio-outputs", Self.outputs)
         let model = NewSessionModel(api: program.api)
         await model.open()
         return (program, model)
+    }
+
+    @Test func theOutputTheSystemPlaysOnIsChosenAtFirstAndTheSessionIsAskedForOnTheOneChosen() async throws {
+        let (program, model) = await opened()
+        #expect(model.output?.id == "Speakers" && !model.lookingForOutputs)
+        model.chosenOutput = "TV"
+        model.name = "morning"
+        program.answer("POST api/run", runState(1, "starting"))
+        _ = await model.start()
+        let sent = try JSONSerialization.jsonObject(with: try #require(program.made("POST api/run").first?.body))
+        #expect((sent as? [String: String?])?["output"] == "TV")
+    }
+
+    @Test func aRunWhoseSessionNeverStartedIsNotSaidToHaveEnded() async {
+        let (_, model) = await opened()
+        model.reportRun(problem: "Headphones is not connected.", started: false)
+        #expect(model.problem == "Headphones is not connected." && !model.runEnded)
+        model.dismissProblem()
+        model.reportRun(problem: "The audio output was disconnected.", started: true)
+        #expect(model.runEnded)
+    }
+
+    @Test func outputsThatCannotBeReadSayWhy() async {
+        let (program, model) = await opened()
+        program.answerFromNow("GET api/audio-outputs", status: 422, #"{"detail": "macOS did not tell."}"#)
+        await model.lookForOutputs()
+        #expect(model.problem == "macOS did not tell.")
+    }
+
+    @Test func anOutputChosenStaysChosenWhileItIsThereAndTheSystemsIsChosenOnceItIsGone() async {
+        let (program, model) = await opened()
+        model.chosenOutput = "TV"
+        await model.lookForOutputs()
+        #expect(model.output?.id == "TV")
+        program.answerFromNow(
+            "GET api/audio-outputs",
+            #"{"outputs": [{"id": "AirPods", "title": "AirPods"}, {"id": "Speakers", "title": "Speakers"}], "system": "AirPods", "hint": ""}"#
+        )
+        await model.lookForOutputs()
+        #expect(model.output?.id == "AirPods")
+    }
+
+    @Test func aMacWithoutOutputsOffersNoneAndNoSessionStarts() async {
+        let (program, model) = await opened()
+        program.answerFromNow(
+            "GET api/audio-outputs", #"{"outputs": [], "system": null, "hint": "Connect headphones."}"#)
+        await model.lookForOutputs()
+        model.name = "morning"
+        #expect(model.output == nil && model.outputs?.hint == "Connect headphones." && !model.canStart)
     }
 
     @Test func anotherSourceStartsFromItsFirstRecordingNotFromTheOneChosenBefore() async {
@@ -201,7 +256,8 @@ struct RunModelTests {
         let program = StubProgram()
         program.answer("GET api/run", runState(1, "finishing"))
         program.answer("GET api/run", runState(2, "starting"))
-        let run = RunModel(api: program.api, state: RunState(run: 1, phase: .running, sessionId: nil, problem: nil))
+        let run = RunModel(
+            api: program.api, state: RunState(run: 1, phase: .running, sessionId: nil, problem: nil))
         await run.refresh()
         #expect(!run.ended)
         await run.refresh()
@@ -221,7 +277,8 @@ struct RunModelTests {
         let program = StubProgram()
         program.answer("GET api/run", status: 500, #"{"detail": "Busy."}"#)
         program.answer("GET api/run", runState(1, "idle", session: "s"))
-        let run = RunModel(api: program.api, state: RunState(run: 1, phase: .running, sessionId: nil, problem: nil))
+        let run = RunModel(
+            api: program.api, state: RunState(run: 1, phase: .running, sessionId: nil, problem: nil))
         await run.refresh()
         #expect(run.problem == "Busy." && !run.ended)  // said, and followed on
         await run.follow()
@@ -232,7 +289,8 @@ struct RunModelTests {
         let program = StubProgram()
         program.answer("POST api/run/stop", status: 500, #"{"detail": "Busy."}"#)
         program.answer("POST api/run/stop", status: 204, "")
-        let run = RunModel(api: program.api, state: RunState(run: 1, phase: .running, sessionId: nil, problem: nil))
+        let run = RunModel(
+            api: program.api, state: RunState(run: 1, phase: .running, sessionId: nil, problem: nil))
         await run.stop()
         #expect(!run.stopping && run.problem == "Busy.")
         await run.stop()

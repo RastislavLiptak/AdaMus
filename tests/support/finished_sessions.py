@@ -13,7 +13,13 @@ from adamus.realtime.session import Devices, Session
 from adamus.session_format import EVENT_ERROR, EVENT_FUDI, read_jsonl
 from tests.support import synthetic_dataset
 from tests.support.project_paths import CONFIG_FILE
-from tests.support.stand_in_devices import StandInClock, StandInGenerator, StandInSource, StopWhen
+from tests.support.stand_in_devices import (
+    SPEAKERS,
+    StandInClock,
+    StandInGenerator,
+    StandInSource,
+    StopWhen,
+)
 from tests.support.synthetic_dataset import board_matrix
 
 FS = c.DETECTOR_FS  # of Muse 2, the headset of the configuration
@@ -57,6 +63,8 @@ class FinishedSession:
         # the stand-in headset, whose notes the tests read, or the source of a recording
         self.source: Any = source or StandInSource(matrix, **source_options)
         self.generator = generator or StandInGenerator()
+        if not self.generator.running:  # as the program has it when a session starts
+            self.generator.start(SPEAKERS)
         self._stop_after_steps = stop_after_steps
         devices = Devices(self.source, self.generator, StopWhen(self._enough_steps), self.clock)
         self._session = Session(config, name, devices, Path(root) / "sessions")

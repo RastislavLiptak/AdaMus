@@ -129,6 +129,7 @@ class SessionRunner:
         )  # fmt: skip
         stop = StopOrGone(self._stop, self._app_gone)
         try:
+            self._play_on(session.output)
             devices = self._machine.devices(
                 session.config, session.recording, self._preflight.generator, stop
             )
@@ -141,6 +142,9 @@ class SessionRunner:
             self._activity.wait_for_the_next_session()
             self._set("idle", problem=str(problem))
             return
+        if result.problem is not None:  # it ran, but not to its end: the operator is told why
+            with self._lock:
+                self._state = self._state.model_copy(update={"problem": result.problem})
         if result.interrupted:
             self._activity.write(ACTION_PROGRAM_STOPPED)
         elif self._app_gone() and not self._stop.is_set():
@@ -158,6 +162,17 @@ class SessionRunner:
         finally:
             self._activity.wait_for_the_next_session()  # what follows belongs to the next one
             self._set("idle")
+
+    def _play_on(self, output: str) -> None:
+        """Have the generator play on ``output``: Pd plays on one output from its start to its
+        end, so it starts again on another, or on one that was disconnected. The start returns
+        once the music of the prompts is ready, so that the session starts quiet."""
+        generator = self._preflight.generator
+        assert generator is not None, "the preflight passed"
+        if generator.running and generator.output == output and not generator.output_lost:
+            return
+        generator.stop()
+        generator.start(output)
 
     def _started(self, folder: Path) -> None:
         """What the program does for the session goes into its folder from now on."""

@@ -3,6 +3,8 @@
 // a useful default), what the program says of the choice, and the name, checked by the
 // program's own rule as it is typed. Opened, the form has the program look for the headset,
 // which takes seconds: meanwhile the datasets are offered, and a session from one can start.
+// The music plays on the audio output chosen, at first the one the system plays on; the program
+// moves it there when the session starts.
 import Foundation
 import Observation
 
@@ -19,9 +21,13 @@ final class NewSessionModel {
     var chosenRecording: String?
     var name = ""
     private(set) var check: SourceCheck?
+    private(set) var outputs: AudioOutputs?
+    /// The output the operator chose; until then, the one the system plays on.
+    var chosenOutput: AudioOutputChoice.ID?
+    private(set) var lookingForOutputs = false
     /// Why the program refused what was asked of it, or why a session it ran did not end well.
     private(set) var problem: String?
-    /// Whether ``problem`` is of a session that ran.
+    /// Whether ``problem`` is of a session that ran, not of one that never started.
     private(set) var runEnded = false
     private(set) var starting = false
 
@@ -32,6 +38,12 @@ final class NewSessionModel {
     var source: SourceChoice? {
         guard let sources = form?.sources else { return nil }
         return sources.first { $0.id == chosenSource } ?? sources.first
+    }
+
+    var output: AudioOutputChoice? {
+        guard let outputs else { return nil }
+        let chosen = outputs.outputs.first { $0.id == chosenOutput }
+        return chosen ?? outputs.outputs.first { $0.id == outputs.system } ?? outputs.outputs.first
     }
 
     var recording: String? {
@@ -51,10 +63,19 @@ final class NewSessionModel {
     var canStart: Bool {
         guard let form, source != nil, !name.isEmpty, !starting else { return false }
         return Self.isName(name, pattern: form.namePattern) && check?.problem == nil && !waitsForHeadset
+            && output != nil
+    }
+
+    /// The form as the program offers it, then again once it has looked for the headset; the
+    /// audio outputs meanwhile.
+    func open() async {
+        async let outputsRead: Void = lookForOutputs()
+        await lookForSources()
+        await outputsRead
     }
 
     /// The form as the program offers it, then again once it has looked for the headset.
-    func open() async {
+    func lookForSources() async {
         do {
             form = try await api.newSessionForm()  // its choice is checked by the form as shown
             lookingForHeadset = true
@@ -89,13 +110,25 @@ final class NewSessionModel {
         }
     }
 
+    /// The audio outputs the Mac has now. The one chosen stays chosen while it is there.
+    func lookForOutputs() async {
+        lookingForOutputs = true
+        defer { lookingForOutputs = false }
+        do {
+            outputs = try await api.audioOutputs()
+        } catch {
+            problem = error.localizedDescription
+        }
+    }
+
     /// Ask for the session; the state of its run, once the program has taken it.
     func start() async -> RunState? {
-        guard canStart, let source else { return nil }
+        guard canStart, let source, let output else { return nil }
         starting = true
         defer { starting = false }
         do {
-            return try await api.start(SessionRequest(sourceId: source.id, recording: recording, name: name))
+            let request = SessionRequest(sourceId: source.id, recording: recording, name: name, output: output.id)
+            return try await api.start(request)
         } catch {
             problem = error.localizedDescription
             return nil
@@ -107,10 +140,10 @@ final class NewSessionModel {
         runEnded = false
     }
 
-    /// A run that did not end well says why, here.
-    func reportRun(problem: String) {
+    /// A run that did not end well says why, here; ``started`` whether its session ran at all.
+    func reportRun(problem: String, started: Bool) {
         self.problem = problem
-        runEnded = true
+        runEnded = started
     }
 
     /// Whether the whole ``name`` keeps the rule ``pattern`` the program gives.

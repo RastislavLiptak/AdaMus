@@ -6,13 +6,20 @@ import time
 from pathlib import Path
 
 from adamus import constants as c
+from adamus.audio_outputs import AudioOutput
 from adamus.errors import AdamusError
 from adamus.machine import Machine
 from adamus.realtime.eeg_source import RecordingSource
 from adamus.realtime.session import Devices
 from tests.support.finished_sessions import synthetic_matrix
 from tests.support.project_paths import PROJECT_MODEL
-from tests.support.stand_in_devices import StandInClock, StandInGenerator, StandInSource
+from tests.support.stand_in_devices import (
+    SPEAKERS,
+    TV,
+    StandInClock,
+    StandInGenerator,
+    StandInSource,
+)
 from tests.support.stand_in_generator_files import install_generator_files
 
 # What the stand-in headset delivers: a long rest, then two FOCUS blocks.
@@ -56,7 +63,8 @@ class StandInMachine(Machine):
     def __init__(self, sessions_root: Path, datasets_root: Path) -> None:
         self.sessions_root = sessions_root
         self.datasets_root = datasets_root
-        self.audio = ("MacBook Pro Speakers", float(c.AUDIO_RATE))
+        self.audio: AudioOutput | None = AudioOutput(SPEAKERS, float(c.AUDIO_RATE))  # the system's
+        self.outputs = [AudioOutput(TV, float(c.AUDIO_RATE)), self.audio]
         self.headsets_on = {"Muse 2"}
         self.generator = StandInGenerator()
         self.probed: list[int] = []
@@ -89,7 +97,12 @@ class StandInMachine(Machine):
         return log_file
 
     def audio_output(self):
+        if self.audio is None:
+            raise AdamusError("the Mac has no audio output")
         return self.audio
+
+    def audio_outputs(self):
+        return list(self.outputs)
 
     def headset_is_available(self, board):
         self.probed.append(board.id)

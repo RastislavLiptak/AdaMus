@@ -14,6 +14,9 @@ NUDGE_S = 1e-6  # every reading of the stand-in clock moves it on by this much
 CHUNK = 64  # samples a poll of a stand-in source delivers at most
 
 
+TV, SPEAKERS = "TV", "MacBook Pro Speakers"  # the audio outputs of the stand-in Mac
+
+
 class StandInClock:
     """Deterministic time: ``sleep`` advances it, every reading nudges it forward.
 
@@ -107,17 +110,26 @@ class StandInGenerator:
         self, fail_after_steps: int | None = None, fail_to_start: str | tuple[str, ...] = ""
     ) -> None:
         self.started = self.stopped = 0
+        self.outputs: list[str] = []  # it was started on, in turn
+        self.output: str | None = None
+        self.output_lost = False  # as the test sets it
         self._running = False
         self._fail_to_start = fail_to_start
         self.messages: list[str] = []
-        self.stderr_copies: list[Path | None] = []
+        self.output_copies: list[Path | None] = []
         self._fail_after_steps = fail_after_steps
 
-    def start(self) -> None:
+    @property
+    def running(self) -> bool:
+        return self._running
+
+    def start(self, output: str) -> None:
+        self.outputs.append(output)
         if self._fail_to_start:
             lines = self._fail_to_start
             raise AdamusError(*([lines] if isinstance(lines, str) else lines))
         self.started += 1
+        self.output, self.output_lost = output, False
         self._running = True
 
     def stop(self) -> None:
@@ -133,8 +145,8 @@ class StandInGenerator:
             raise OSError("broken pipe")
         self.messages.append(message)
 
-    def copy_stderr_to(self, session_log: Path | None) -> None:
-        self.stderr_copies.append(session_log)
+    def copy_output_to(self, session_log: Path | None) -> None:
+        self.output_copies.append(session_log)
 
     @property
     def weights(self) -> list[tuple[float, float]]:

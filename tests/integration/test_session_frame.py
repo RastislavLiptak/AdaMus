@@ -75,7 +75,7 @@ class TestSessionFrame:
         assert (stream["board_id"], stream["fs"], stream["n"]) == (38, 256, 0)
 
     def test_pd_stderr_is_copied_to_the_session_only_while_it_runs(self, short):
-        assert short.generator.stderr_copies == [short.directory / "pd.log", None]
+        assert short.generator.output_copies == [short.directory / "pd.log", None]
 
     def test_pd_stays_with_the_session_until_it_finished_the_recording(self, tmp_path, monkeypatch):
         """What Pd prints while it closes audio.wav belongs to the pd.log of this session,
@@ -83,7 +83,7 @@ class TestSessionFrame:
         generator, looks = StandInGenerator(), []
 
         def finished(path):
-            looks.append((path, generator.stderr_copies[-1]))
+            looks.append((path, generator.output_copies[-1]))
             return len(looks) == 3
 
         monkeypatch.setattr(session_recorder, "recording_finished", finished)
@@ -91,7 +91,7 @@ class TestSessionFrame:
                                   generator=generator)  # fmt: skip
         pd_log = session.directory / "pd.log"
         assert looks == [(session.directory / "audio.wav", pd_log)] * 3
-        assert generator.stderr_copies == [pd_log, None]
+        assert generator.output_copies == [pd_log, None]
         assert generator.messages[-1] == "rec stop;"  # it waited after the last message
         assert "did not finish" not in (session.directory / c.FILE_LOG).read_text()
 
@@ -349,7 +349,7 @@ class TestEndings:
             REASON_ERROR,
             "the generator does not answer",
         )
-        assert session.source.stopped and session.generator.stderr_copies[-1] is None
+        assert session.source.stopped and session.generator.output_copies[-1] is None
         assert session.events_of("ERROR")[0]["where"] == "generator"
         assert session.events[-1]["type"] == "SESSION_END"
 

@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 
 from adamus import constants as c
 from adamus.activity_log import ACTION_PREFLIGHT, ActivityLog
+from adamus.audio_outputs import AudioOutput
 from adamus.config import Config, Generator, load_config
 from adamus.detection.focus_detector import load_models
 from adamus.detection.focus_training import DATASET_URL
@@ -85,6 +86,7 @@ class Preflight:
             )
         ]  # fmt: skip
         self.config: Config | None = None
+        self.audio_output: AudioOutput | None = None  # the one the system played on, at the start
         self.generator: RunningGenerator | None = None
 
     def run(self) -> bool:
@@ -158,10 +160,11 @@ class Preflight:
         return f"{root}/ writable"
 
     def _audio_output(self) -> str:
-        name, rate = self._machine.audio_output()
-        if rate != c.AUDIO_RATE:
-            raise AdamusError(f"{name}, {rate:g} Hz (need {c.AUDIO_RATE} Hz)")
-        return f"{name}, {c.AUDIO_RATE} Hz"
+        output = self._machine.audio_output()
+        if output.rate != c.AUDIO_RATE:
+            raise AdamusError(f"{output.name}, {output.rate:g} Hz (need {c.AUDIO_RATE} Hz)")
+        self.audio_output = output
+        return f"{output.name}, {c.AUDIO_RATE} Hz"
 
     def _obtained(
         self, name: str, doing: str, missing: Callable[[], str], make: Callable[[], Path]
@@ -213,9 +216,9 @@ class Preflight:
         return ", ".join(str(path) for path in files if not path.is_file())
 
     def _generator_start(self) -> str:
-        assert self.config is not None
+        assert self.config is not None and self.audio_output is not None
         # known before it starts, so that the end of the program stops it also when the start is
         # interrupted half way
         self.generator = self._machine.make_generator(self.config, self._activity_log.write)
-        self.generator.start()
-        return "model loaded"
+        self.generator.start(self.audio_output.name)
+        return f"model loaded, playing on {self.audio_output.name}"

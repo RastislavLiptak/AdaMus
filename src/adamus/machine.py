@@ -11,9 +11,9 @@ import traceback
 from pathlib import Path
 from typing import Protocol
 
-import sounddevice
-
+from adamus import audio_outputs
 from adamus import constants as c
+from adamus.audio_outputs import AudioOutput
 from adamus.config import Board, Config, Generator
 from adamus.detection.focus_training import train
 from adamus.errors import AdamusError
@@ -45,9 +45,13 @@ def missing_install_tools(path: str) -> list[str]:
 
 class RunningGenerator(MusicOutput, Protocol):
     """The music generator, as the program uses it: started when the checks pass, stopped
-    when the program ends, and between the two what a session sends to it."""
+    when the program ends, and between the two what a session sends to it. Started again on
+    another audio output, when the operator chooses one."""
 
-    def start(self) -> None: ...
+    @property
+    def running(self) -> bool: ...
+
+    def start(self, output: str) -> None: ...
 
     def stop(self) -> None: ...
 
@@ -113,19 +117,25 @@ class Machine:
             raise AdamusError(f"the installation of the generator failed, see {log_file}")
         return log_file
 
-    def audio_output(self) -> tuple[str, float]:
-        """Name and default sample rate of the default output device."""
-        try:
-            device = sounddevice.query_devices(kind="output")
-        except (sounddevice.PortAudioError, ValueError) as problem:
-            raise AdamusError(f"no audio output device: {problem}") from problem
-        return device["name"], device["default_samplerate"]
+    def audio_output(self) -> AudioOutput:
+        """The output the system plays on now."""
+        output = audio_outputs.system_output()
+        if output is None:
+            raise AdamusError("the Mac has no audio output")
+        return output
+
+    def audio_outputs(self) -> list[AudioOutput]:
+        """Every output the Mac has now."""
+        return audio_outputs.outputs()
 
     def headset_is_available(self, board: Board) -> bool:
         return eeg_source.headset_is_available(board)
 
     def make_generator(self, config: Config, report: Report) -> RunningGenerator:
-        return MusicGenerator(config.generator, config.timeouts, report)
+        def present() -> list[str]:
+            return [output.name for output in audio_outputs.outputs()]
+
+        return MusicGenerator(config.generator, config.timeouts, report, present)
 
     def devices(
         self, config: Config, recording: Path | None, generator: MusicOutput, stop: StopRequest

@@ -247,10 +247,24 @@ class SourceCheck(BaseModel):
     problem: str | None  # why a session cannot run from it
 
 
+class AudioOutputChoice(BaseModel):
+    id: str
+    title: str  # as the form shows it
+
+
+class AudioOutputs(BaseModel):
+    """The outputs the music can play on, and the one the system plays on: chosen at first."""
+
+    outputs: list[AudioOutputChoice]
+    system: str | None  # the id of the one the system plays on; None when it plays on none
+    hint: str  # what to tell the operator when there is none
+
+
 class SessionRequest(BaseModel):
     source_id: str
     recording: str | None = None  # of a dataset; none of the headset
     name: str
+    output: str  # the id of the audio output the music is to play on
 
 
 Phase = Literal["idle", "starting", "running", "finishing"]
@@ -260,4 +274,4 @@ class RunState(BaseModel):
     run: int  # how many sessions have been asked for so far
     phase: Phase
     session_id: str | None  # the folder of the session of this run, once it has one
-    problem: str | None  # why the session of this run could not start
+    problem: str | None  # why the session of this run could not start, or ended in an error

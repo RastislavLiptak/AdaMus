@@ -48,6 +48,7 @@ from adamus.session_format import (
 
 log = logging.getLogger(__name__)
 STEP_LOG = "step %d: valid=%s score=%s f=%s"  # what a step leaves in adamus.log
+OUTPUT_LOST = "The audio output {output} was disconnected, so the music could not be heard."
 
 
 class EegSource(Protocol):
@@ -88,9 +89,15 @@ class MusicOutput(Protocol):
     @property
     def pd_version(self) -> str | None: ...
 
+    @property
+    def output(self) -> str | None: ...  # the audio output it plays on
+
+    @property
+    def output_lost(self) -> bool: ...  # that output has gone from the Mac
+
     def send(self, message: str) -> None: ...
 
-    def copy_stderr_to(self, session_log: Path | None) -> None: ...
+    def copy_output_to(self, session_log: Path | None) -> None: ...
 
 
 class StopRequest(Protocol):
@@ -114,6 +121,7 @@ class SessionResult:
     directory: Path
     reason: str  # user, end_of_stream or error
     interrupted: bool  # ended by a signal such as [CTRL]+[C], not by the operator's request
+    problem: str | None  # what failed, when it ended in an error
 
 
 class Session:
@@ -150,6 +158,7 @@ class Session:
         self._stage = STAGE_RECORD  # what the session is doing, for ERROR events
         self._streaming = False
         self._failed = False
+        self._problem: str | None = None  # the first failure, as its ERROR event says it
         self._stop_signalled = False
         self._recorder = SessionRecorder(root, name, devices.clock.now())
         self.directory = self._recorder.directory
@@ -170,7 +179,7 @@ class Session:
             self._recorder.close()
             for number, handler in previous.items():
                 signal.signal(number, handler)
-        return SessionResult(self.directory, reason, self._stop_signalled)
+        return SessionResult(self.directory, reason, self._stop_signalled, self._problem)
 
     def _on_stop_signal(self, _number: int, _frame: object) -> None:
         self._stop_signalled = True
@@ -208,7 +217,7 @@ class Session:
         recorder.write_model(self._models.raw)
         recorder.write_meta(self._meta())
         self._stage = STAGE_GENERATOR
-        devices.generator.copy_stderr_to(recorder.pd_log)
+        devices.generator.copy_output_to(recorder.pd_log)
         self._send(
             generator_messages.session_start_messages(self._config.generator, recorder.audio_wav)
         )
@@ -226,7 +235,7 @@ class Session:
             if not self._recorder.wait_for_recording(self._devices.clock.sleep):
                 log.warning("Pd did not finish %s in time", self._recorder.audio_wav.name)
         finally:
-            self._devices.generator.copy_stderr_to(None)
+            self._devices.generator.copy_output_to(None)
 
     def _stop_stream(self) -> None:
         if self._streaming:
@@ -243,6 +252,7 @@ class Session:
         playback = None if source.playback_file is None else str(source.playback_file)
         return {
             "pd": self._devices.generator.pd_version,
+            "audio_output": self._devices.generator.output,
             "board_id": source.board_id,
             "fs": self._fs,
             "electrode_rows": source.electrode_rows,
@@ -262,6 +272,9 @@ class Session:
         while True:  # until the operator, the stream or a failure ends the session
             if self._stop_signalled or devices.stop.is_set():
                 return REASON_USER
+            if devices.generator.output_lost:  # the music is heard nowhere: no use going on
+                self._stage = STAGE_GENERATOR
+                raise AdamusError(OUTPUT_LOST.format(output=devices.generator.output))
             devices.clock.sleep(config.poll_s)
             before = self._received
             self._receive_and_process(sending=True)
@@ -375,6 +388,7 @@ class Session:
         self._failed = True
         known = isinstance(problem, AdamusError)
         message = str(problem) if known else f"{type(problem).__name__}: {problem}"
+        self._problem = message
         try:
             self._event(EVENT_ERROR, where=self._stage, message=message)
         except OSError:  # a full disk: the session must still be finished, the generator quiet

@@ -12,6 +12,7 @@ import pytest
 from adamus import constants as c
 from adamus import machine as the_computer
 from adamus.activity_log import ActivityLog
+from adamus.audio_outputs import AudioOutput
 from adamus.errors import AdamusError
 from tests.support.project_paths import ROOT
 
@@ -23,28 +24,21 @@ POLL_S = 0.05
 class TestTheRealMachine:
     """What the stand-in machine of the other tests replaces."""
 
-    def test_audio_output_is_the_default_output_device(self, monkeypatch):
-        asked = []
+    def test_audio_output_is_the_one_the_system_plays_on(self, monkeypatch):
+        speakers = AudioOutput("MacBook Pro Speakers", 48000.0)
+        monkeypatch.setattr(the_computer.audio_outputs, "system_output", lambda: speakers)
+        assert the_computer.Machine().audio_output() == speakers
 
-        def query_devices(kind):
-            asked.append(kind)
-            return {"name": "MacBook Pro Speakers", "default_samplerate": 48000.0, "index": 1}
-
-        monkeypatch.setattr(the_computer.sounddevice, "query_devices", query_devices)
-        assert the_computer.Machine().audio_output() == ("MacBook Pro Speakers", 48000.0)
-        assert asked == ["output"]
-
-    @pytest.mark.parametrize(
-        "problem", [the_computer.sounddevice.PortAudioError("no device"), ValueError("none")]
-    )
-    def test_computer_without_an_audio_output(self, monkeypatch, problem):
-        def query_devices(kind):
-            raise problem
-
-        monkeypatch.setattr(the_computer.sounddevice, "query_devices", query_devices)
+    def test_computer_without_an_audio_output(self, monkeypatch):
+        monkeypatch.setattr(the_computer.audio_outputs, "system_output", lambda: None)
         with pytest.raises(AdamusError) as error:
             the_computer.Machine().audio_output()
-        assert str(error.value) == f"no audio output device: {problem}"
+        assert str(error.value) == "the Mac has no audio output"
+
+    def test_audio_outputs_are_those_of_the_mac_now(self, monkeypatch):
+        found = [AudioOutput("TV", 48000.0), AudioOutput("Headphones", 44100.0)]
+        monkeypatch.setattr(the_computer.audio_outputs, "outputs", lambda: found)
+        assert the_computer.Machine().audio_outputs() == found
 
     def test_headsets_generator_and_devices_are_the_real_ones(self, program, monkeypatch):
         from adamus.config import parse_config
@@ -61,6 +55,9 @@ class TestTheRealMachine:
         generator = machine.make_generator(config, log.write)
         assert isinstance(generator, MusicGenerator)
         assert (generator.config, generator.timeouts) == (config.generator, config.timeouts)
+        found = [AudioOutput("TV", 48000.0), AudioOutput("Headphones", 44100.0)]
+        monkeypatch.setattr(the_computer.audio_outputs, "outputs", lambda: found)
+        assert generator.present_outputs() == ["TV", "Headphones"]  # what it watches for
 
         recording = program.add_recording("rec")
         stop = threading.Event()

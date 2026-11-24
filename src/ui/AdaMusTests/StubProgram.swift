@@ -48,6 +48,11 @@ final class StubProgram: Sendable {
         calls.withLock { $0.answers[route, default: []].append(Answer(status: status, body: Data(json.utf8))) }
     }
 
+    /// Answer the next call of ``route`` with ``json`` instead of whatever was given for it before.
+    func answerFromNow(_ route: String, status: Int = 200, _ json: String) {
+        calls.withLock { $0.answers[route] = [Answer(status: status, body: Data(json.utf8))] }
+    }
+
     var made: [Call] { calls.withLock { $0.made } }
 
     func made(_ route: String) -> [Call] { made.filter { $0.route == route } }

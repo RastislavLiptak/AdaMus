@@ -11,7 +11,7 @@ import re
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 from adamus.constants import LINE_END
 from adamus.errors import AdamusError
@@ -87,6 +87,7 @@ class SessionFacts(TypedDict):
     """What a session ran on: its source, its detector and its generator."""
 
     pd: str | None
+    audio_output: NotRequired[str | None]  # the music was played on; not known of older sessions
     board_id: int
     fs: int
     electrode_rows: dict[str, int]

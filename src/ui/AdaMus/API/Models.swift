@@ -284,10 +284,24 @@ struct SourceCheck: Decodable, Equatable, Sendable {
     let problem: String?
 }
 
+struct AudioOutputChoice: Decodable, Identifiable, Hashable, Sendable {
+    let id: String
+    let title: String
+}
+
+struct AudioOutputs: Decodable, Sendable {
+    let outputs: [AudioOutputChoice]
+    /// The one the system plays on, chosen at first; none when it plays on none.
+    let system: String?
+    let hint: String
+}
+
 struct SessionRequest: Encodable, Equatable, Sendable {
     let sourceId: String
     let recording: String?
     let name: String
+    /// The audio output the music is to play on.
+    let output: String
 }
 
 enum Phase: String, Decodable, Sendable {
@@ -298,5 +312,6 @@ struct RunState: Decodable, Equatable, Sendable {
     let run: Int
     let phase: Phase
     let sessionId: String?
+    /// Why the session could not start, or ended in an error.
     let problem: String?
 }

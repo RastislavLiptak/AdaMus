@@ -23,6 +23,7 @@ from tests.support.finished_sessions import synthetic_signals
 from tests.support.project_paths import CONFIG_FILE, require_reference_model
 from tests.support.stand_in_generator_files import install_stand_in_generator
 from tests.support.stand_in_machine import place_focus_model
+from tests.support.stand_in_pure_data import OUTPUTS
 from tests.support.synthetic_dataset import write_recording
 
 # A session in real time takes its time: run by the full run only.
@@ -38,9 +39,11 @@ def run_batch_session(config_path: Path, name: str, recording: Path) -> SessionR
     """Start the generator, play ``recording`` through one session, stop the generator: the
     program without its app."""
     config = load_config(config_path)
-    generator = MusicGenerator(config.generator, config.timeouts, lambda kind, /, **fields: None)
+    generator = MusicGenerator(
+        config.generator, config.timeouts, lambda kind, /, **fields: None, lambda: OUTPUTS
+    )
     try:
-        generator.start()
+        generator.start(OUTPUTS[0])
         devices = real_devices(config, recording, generator, threading.Event())  # never set
         return run_session(config, name, devices, c.SESSIONS_DIR, lambda folder: None)
     finally:

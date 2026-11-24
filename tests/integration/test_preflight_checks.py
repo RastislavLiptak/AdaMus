@@ -6,6 +6,7 @@ import pytest
 
 from adamus import constants as c
 from adamus.activity_log import ActivityLog
+from adamus.audio_outputs import AudioOutput
 from adamus.config import write_yaml
 from adamus.preflight import checks
 from adamus.preflight.checks import FAILED, PASSED, PENDING, RUNNING, SKIPPED, Preflight
@@ -38,10 +39,10 @@ class TestAllPass:
             "Focus detector": (PASSED, f"{c.FOCUS_MODEL_PATH}, {people()} people"),
             "Audio output": (PASSED, "MacBook Pro Speakers, 48000 Hz"),
             "Generator files": (PASSED, "pd, mrt2~, patch, mrt2_small"),
-            "Generator start": (PASSED, "model loaded"),
+            "Generator start": (PASSED, "model loaded, playing on MacBook Pro Speakers"),
         }
         assert fixes(program) == {}
-        assert program.machine.generator.started == 1
+        assert program.machine.generator.outputs == ["MacBook Pro Speakers"]  # started once
 
     def test_results_are_logged_in_order_with_their_duration(self, program):
         program.start()
@@ -140,7 +141,7 @@ class TestRequiredChecks:
 
     @pytest.mark.parametrize("rate", [44100.0, 96000.0])
     def test_audio_output_must_run_at_48_khz(self, program, rate):
-        program.machine.audio = ("USB Headphones", rate)
+        program.machine.audio = AudioOutput("USB Headphones", rate)
         assert program.start() == 1
         rows = told(program)
         assert rows["Audio output"] == (FAILED, f"USB Headphones, {rate:g} Hz (need 48000 Hz)")
@@ -293,14 +294,14 @@ class TestWhatTheOperatorSees:
 
 class TestLogAndDetails:
     def test_failed_and_skipped_checks_are_logged_as_such(self, program):
-        program.machine.audio = ("USB Headphones", 44100.0)
+        program.machine.audio = AudioOutput("USB Headphones", 44100.0)
         program.start()
         results = {entry["check"]: entry["result"] for entry in program.logged("PREFLIGHT")}
         assert (results["Audio output"], results["Generator start"]) == ("failed", "skipped")
         assert results["Storage"] == "passed"
 
     def test_results_of_a_run_that_ends_in_the_preflight_are_stored_nowhere(self, program):
-        program.machine.audio = ("USB Headphones", 44100.0)
+        program.machine.audio = AudioOutput("USB Headphones", 44100.0)
         assert program.start() == 1
         assert list((program.folder / "sessions").iterdir()) == []
 

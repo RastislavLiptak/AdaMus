@@ -13,9 +13,11 @@ import urllib.request
 import pytest
 
 from adamus import constants as c
+from adamus.audio_outputs import AudioOutput
 from adamus.preflight import checks
 from adamus.server.api import TOKEN_HEADER
 from adamus.session_format import read_jsonl
+from tests.support.stand_in_devices import SPEAKERS
 from tests.support.waiting import wait_until
 
 WAIT_S = 30  # the longest the operator waits for the program
@@ -76,7 +78,12 @@ def test_a_session_over_a_recording_from_the_form_to_the_dashboard(program):
     def actions(operator):
         form = operator.call("POST", "/api/new-session/refresh")  # as the form does as it opens
         seen["sources"] = [source["id"] for source in form["sources"]]
-        request = {"source_id": "dataset:simulated", "recording": "short", "name": "S01"}
+        request = {
+            "source_id": "dataset:simulated",
+            "recording": "short",
+            "name": "S01",
+            "output": SPEAKERS,
+        }
         started = operator.call("POST", "/api/run", request)
         state = operator.finished(started["run"])
         seen["dashboard"] = operator.call("GET", f"/api/sessions/{state['session_id']}/dashboard")
@@ -143,7 +150,7 @@ def test_the_server_stops_with_the_program(program):
 
 
 def test_what_failed_is_told_with_how_to_fix_it_and_the_program_ends(program):
-    program.machine.audio = ("USB Headphones", 44100.0)
+    program.machine.audio = AudioOutput("USB Headphones", 44100.0)
     assert program.start() == 1
     last = {row["name"]: row for row in program.checklists()[-1]}
     assert last[checks.AUDIO_OUTPUT] == {
@@ -187,7 +194,12 @@ def test_deleting_a_session_with_the_headset_takes_its_recording_from_the_source
 
     def actions(operator):
         operator.call("POST", "/api/new-session/refresh")  # as the form does as it opens
-        request = {"source_id": "headset:Muse 2", "recording": None, "name": "L"}
+        request = {
+            "source_id": "headset:Muse 2",
+            "recording": None,
+            "name": "L",
+            "output": SPEAKERS,
+        }
         started = operator.call("POST", "/api/run", request)
         state = operator.finished(started["run"])
         sources = operator.call("GET", "/api/new-session")["sources"]
@@ -209,7 +221,12 @@ def test_the_app_ending_mid_session_ends_the_session_as_a_stop_and_then_the_prog
 
     def actions(operator):
         operator.call("POST", "/api/new-session/refresh")
-        request = {"source_id": "headset:Muse 2", "recording": None, "name": "live"}
+        request = {
+            "source_id": "headset:Muse 2",
+            "recording": None,
+            "name": "live",
+            "output": SPEAKERS,
+        }
         operator.call("POST", "/api/run", request)
         wait_until(lambda: operator.call("GET", "/api/run")["phase"] == "running",
                    "the session did not start", WAIT_S, POLL_S)  # fmt: skip
@@ -244,8 +261,8 @@ def test_a_generator_whose_start_is_interrupted_is_stopped_all_the_same(program,
     """The app may end while the generator loads its model: Pd must not outlive the program."""
     start = program.machine.generator.start
 
-    def interrupted_half_way():
-        start()
+    def interrupted_half_way(output):
+        start(output)
         raise KeyboardInterrupt
 
     monkeypatch.setattr(program.machine.generator, "start", interrupted_half_way)

@@ -93,6 +93,11 @@ struct APIClient: Sendable, Equatable {
         try await decoded("api/sources/\(source)/check", query: recording.map { ["recording": $0] } ?? [:])
     }
 
+    /// The audio outputs of the Mac now, and the one the system plays on.
+    func audioOutputs() async throws -> AudioOutputs {
+        try await decoded("api/audio-outputs")
+    }
+
     func start(_ request: SessionRequest) async throws -> RunState {
         try await decoded("api/run", method: "POST", sending: try Self.encoder.encode(request))
     }

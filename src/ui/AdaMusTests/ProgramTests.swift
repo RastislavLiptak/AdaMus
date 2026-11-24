@@ -172,6 +172,10 @@ struct RealProgramTests {
         await form.open()
         #expect(form.problem == nil)
         #expect(form.form?.sources.first?.live == true)  // the stand-in headset, found and first
+        // the stand-in Mac plays on its speakers; the session is asked for on its TV
+        #expect(form.outputs?.outputs.map(\.id) == ["TV", "MacBook Pro Speakers"])
+        #expect(form.output?.id == "MacBook Pro Speakers")
+        form.chosenOutput = "TV"
         form.chosenSource = form.form?.sources.first { !$0.live }?.id
         await form.checkChoice()
         #expect(form.recording != nil && form.check?.problem == nil)
