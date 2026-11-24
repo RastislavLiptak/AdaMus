@@ -17,7 +17,13 @@ from typing import Any, Protocol
 from adamus import constants as c
 from adamus.config import Generator, Timeouts
 from adamus.errors import AdamusError
-from adamus.realtime.generator_messages import fudi, path_atom
+from adamus.realtime.generator_messages import (
+    START_W_FOCUS,
+    START_W_IDLE,
+    fudi,
+    path_atom,
+    step_messages,
+)
 from adamus.session_format import LOG_SEPARATOR, log_time
 
 log = logging.getLogger(__name__)
@@ -100,6 +106,12 @@ class MusicGenerator:
             self._load("model", self.config.model_file, MODEL_LOADED, deadline)
             self._report(REPORT_MODEL_LOADED)
             self.send(fudi("buffersize", AUDIO_BUFFER_SAMPLES))
+            # mrt2~ turns a prompt into music only after encoding it in the background:
+            # sent at the start of a session, the first 1.5-1.9 s played its built-in
+            # piano style, measured louder and denser than the quiet form. Encoded here,
+            # the session start finds them in the cache of mrt2~.
+            for message in step_messages(self.config, START_W_IDLE, START_W_FOCUS):
+                self.send(message)
         except AdamusError as problem:
             self.stop()
             printed = [f"  {line.rstrip()}" for _, line in self._printed]

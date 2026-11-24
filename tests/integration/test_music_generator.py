@@ -181,6 +181,25 @@ class TestStart:
         assert heads.index("bypass") < heads.index("model")
         assert sent[heads.index("bypass")] == fudi("bypass", 1)
 
+    def test_prompts_a_session_starts_with_are_encoded_when_the_model_is_loaded(
+        self, make_generator, monkeypatch, tmp_path
+    ):
+        """mrt2~ encodes a prompt in the background: sent only when a session began, the
+        first 1.5-1.9 s of three sessions played its built-in piano style instead."""
+        generator = make_generator()
+        sent = []
+        send = generator.send
+        monkeypatch.setattr(generator, "send", lambda text: (sent.append(text), send(text)))
+        generator.start()
+        heads = [message.split()[0] for message in sent]
+        assert heads.index("model") < heads.index("prompt")
+        session_prompts = [
+            message
+            for message in session_start_messages(generator.config, tmp_path / c.FILE_AUDIO)
+            if message.startswith("prompt")
+        ]
+        assert [message for message in sent if message.startswith("prompt")] == session_prompts
+
     def test_generator_sleeps_after_start(self, make_generator, tmp_path):
         """No audio until a session begins."""
         generator = make_generator()
