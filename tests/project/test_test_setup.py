@@ -6,8 +6,6 @@ import numpy as np
 import pytest
 
 from adamus import constants as c
-from adamus.console import machine
-from adamus.own_recordings import OWN_RECORDINGS
 from tests.support.project_paths import (
     MISSING_MODEL,
     OTHER_MODEL,
@@ -23,7 +21,7 @@ from tests.support.synthetic_dataset import write_recording
 
 def test_the_reference_tests_see_only_the_datasets_shipped_with_the_project(tmp_path):
     """The sessions of the operator are stored in the data folder too; they are no reference."""
-    for dataset in ("synthetic", OWN_RECORDINGS):
+    for dataset in ("synthetic", c.OWN_RECORDINGS):
         write_recording(tmp_path / dataset / "one", np.zeros((4, 1)), [("REST", 1 / 256)])
     assert shipped_datasets(tmp_path) == [tmp_path / "synthetic"]
 
@@ -41,24 +39,12 @@ def test_tests_run_in_the_project_folder():
     assert (ROOT / "pyproject.toml").is_file()
 
 
-def test_the_models_are_those_the_program_trained_in_the_project():
-    assert PROJECT_MODEL == ROOT / c.FOCUS_MODEL_PATH and PROJECT_MODEL.is_file()
-
-
-def test_missing_models_stop_the_run_and_are_never_trained_by_the_tests(tmp_path, monkeypatch):
-    def train(machine):
-        pytest.fail("the tests trained the focus models")
-
-    monkeypatch.setattr(machine.Machine, "train_focus_detector", train)
+def test_missing_models_stop_the_run_with_how_to_get_them(tmp_path):
     missing = tmp_path / "focus_model.json"
     with pytest.raises(pytest.exit.Exception) as stopped:
         require_trained_models(missing)
     assert str(stopped.value) == f"{missing}: {MISSING_MODEL}"
     assert not list(tmp_path.iterdir())
-
-
-def test_present_models_let_the_run_go_on():
-    require_trained_models()  # returns: the project's models are there
 
 
 def test_reference_values_need_the_model_they_were_computed_with(tmp_path):

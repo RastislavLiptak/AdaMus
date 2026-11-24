@@ -7,6 +7,7 @@ import logging
 import re
 import subprocess
 import sys
+import time
 import wave
 from pathlib import Path
 
@@ -19,8 +20,9 @@ from adamus import constants as c
 from adamus.config import load_config
 from adamus.realtime import session_recorder
 from adamus.realtime.session_recorder import SessionRecorder
-from tests.support.finished_sessions import read_lines
+from adamus.session_format import read_jsonl, read_log_line
 
+MOMENT_S = 5.0  # a line of the log was written within this of now
 STARTED = datetime.datetime(2026, 11, 10, 15, 4, 12).timestamp()
 
 
@@ -79,7 +81,7 @@ class TestConfigAndMeta:
         import platform
         from importlib.metadata import PackageNotFoundError, version
 
-        recorder.write_meta({"board_id": 38, "mode": "live", "playback_path": None})
+        recorder.write_meta({"board_id": 38, "playback_path": None})
         meta = json.loads((recorder.directory / c.FILE_META).read_text())
         assert "adamus" not in meta["versions"]  # the commit says which program it was
         assert meta["python"] == platform.python_version()
@@ -93,8 +95,7 @@ class TestConfigAndMeta:
             magenta_rt = None
         assert versions["magenta-rt"] == magenta_rt
         assert "adamus_commit" in meta
-        assert (meta["board_id"], meta["mode"], meta["playback_path"]) == (38, "live", None)
-        assert meta["files"] == {"raw": "raw.csv", "audio": "audio.wav", "pd_log": "pd.log"}
+        assert (meta["board_id"], meta["playback_path"]) == (38, None)
 
 
 def test_library_that_is_not_installed_has_no_version(recorder, monkeypatch):
@@ -177,7 +178,7 @@ class TestEvents:
 
     def test_event_is_on_disk_at_once(self, recorder):
         recorder.event("ERROR", 1.0, 0, where="loop")
-        assert read_lines(recorder.directory / c.FILE_EVENTS) == [
+        assert read_jsonl(recorder.directory / c.FILE_EVENTS) == [
             {"t": 1.0, "n": 0, "type": "ERROR", "where": "loop"}
         ]
 
@@ -187,7 +188,7 @@ class TestTicks:
         windows = [np.full((2, 8), k, dtype=np.float64) + [[0.25], [0.5]] for k in range(3)]
         for k, window in enumerate(windows):
             recorder.tick({"k": k, "E": 0.5}, window)
-        assert read_lines(recorder.directory / c.FILE_TICKS) == [
+        assert read_jsonl(recorder.directory / c.FILE_TICKS) == [
             {"k": k, "E": 0.5} for k in range(3)
         ]
         stored = np.fromfile(recorder.directory / c.FILE_FILTERED, dtype="<f4")
@@ -204,7 +205,7 @@ class TestTicks:
         """A crash loses no more than the step in progress."""
         for k in range(3):
             recorder.tick({"k": k}, np.zeros((2, 4)))
-            assert len(read_lines(recorder.directory / c.FILE_TICKS)) == k + 1
+            assert len(read_jsonl(recorder.directory / c.FILE_TICKS)) == k + 1
             assert (recorder.directory / c.FILE_FILTERED).stat().st_size == (k + 1) * 2 * 4 * 4
 
     def test_value_that_json_cannot_hold_is_refused(self, recorder):
@@ -218,8 +219,14 @@ class TestLog:
         recorder.close()
         text = (recorder.directory / c.FILE_LOG).read_text()
         assert re.search(
-            r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3} DEBUG adamus.test: fine detail$", text, re.M
+            r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}[+-]\d\d:\d\d DEBUG adamus.test: fine detail$",
+            text,
+            re.M,
         )
+        read = read_log_line(text.splitlines()[-1])
+        assert read is not None
+        written, said = read
+        assert abs(written - time.time()) < MOMENT_S and said == "DEBUG adamus.test: fine detail"
         logging.getLogger("adamus.test").debug("after close")
         assert "after close" not in (recorder.directory / c.FILE_LOG).read_text()
 
@@ -230,9 +237,9 @@ class TestLog:
 
 
 def test_outside_a_session_no_record_of_adamus_reaches_the_terminal():
-    """Python prints a warning that no handler takes to stderr: in the console it would break
+    """Python prints a warning that no handler takes to stderr: in the terminal it would break
     into the checklist. A fresh interpreter, as pytest catches every record itself."""
-    warn = "import logging, adamus; logging.getLogger('adamus.console').warning('lost')"
+    warn = "import logging, adamus; logging.getLogger('adamus.preflight').warning('lost')"
     run = subprocess.run([sys.executable, "-c", warn], capture_output=True, text=True, check=True)
     assert run.stderr == ""
 
@@ -248,7 +255,9 @@ class TestFinishedRecording:
     def test_a_file_still_being_written_is_not(self, tmp_path):
         path = tmp_path / "audio.wav"
         writing = wave.open(str(path), "wb")  # noqa: SIM115 - closed below
-        writing.setnchannels(2), writing.setsampwidth(2), writing.setframerate(48000)
+        writing.setnchannels(2)
+        writing.setsampwidth(2)
+        writing.setframerate(48000)
         writing.writeframesraw(bytes(4 * 480))  # the header still counts no frame
         assert not session_recorder.recording_finished(path)
         writing.close()

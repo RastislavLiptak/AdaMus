@@ -42,7 +42,7 @@ class TestBlockSpans:
         spans = block_spans([Block("REST", seconds) for seconds in durations], fs)
         assert spans[0].start == 0
         assert all(a.end == b.start for a, b in zip(spans, spans[1:], strict=False))
-        assert all(span.end >= span.start for span in spans)
+        assert all(span.end is not None and span.end >= span.start for span in spans)
         assert abs(spans[-1].end - fs * sum(durations)) <= 0.5 + 1e-6
 
 
@@ -66,7 +66,9 @@ class TestLocateStep:
         spans = block_spans(protocol, FS)
         timed = [span for span in spans if span.end is not None]
         full = dict.fromkeys(range(len(timed)), 0)
-        for k in range((timed[-1].end - WINDOW) // H + 1):
+        last_end = timed[-1].end
+        assert last_end is not None
+        for k in range((last_end - WINDOW) // H + 1):
             span, is_full = locate_step(spans, WINDOW + k * H, WINDOW)
             full[span.index] += is_full
         assert set(full.values()) == {expected}

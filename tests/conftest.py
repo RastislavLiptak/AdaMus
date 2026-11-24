@@ -2,20 +2,38 @@
 
 import copy
 import os
+import shutil
 from pathlib import Path
 
 import pytest
 from hypothesis import settings
 
+from adamus import parallel
 from adamus.config import parse_config, read_yaml
-from tests.support.fake_generator_files import install_fake_generator
 from tests.support.finished_sessions import synthetic_signals
+from tests.support.played_sessions import play_session
 from tests.support.project_paths import (
     CONFIG_FILE,
     ROOT,
     require_trained_models,
     what_the_program_keeps,
 )
+from tests.support.stand_in_generator_files import install_stand_in_generator
+
+TEST_MEMORY = parallel.GIGABYTE  # a process of the tests at the most: a session
+
+
+def pytest_collection_modifyitems(items):
+    """A test that is neither slow nor uses the window is fast: -m fast runs it."""
+    for item in items:
+        if not any(item.get_closest_marker(mark) for mark in ("slow", "window")):
+            item.add_marker(pytest.mark.fast)
+
+
+def pytest_xdist_auto_num_workers(config):
+    """As many processes of the tests as the computer has room for, all of it theirs."""
+    return parallel.processes_here(TEST_MEMORY, alone=True)
+
 
 # Property tests: no time limit per example (the first call loads BrainFlow), and no database
 # of examples: one found against a mutant would be played again in every later run.
@@ -61,6 +79,25 @@ def synthetic_default_signals(default_protocol):
 
 
 @pytest.fixture
-def fake_generator(tmp_path):
-    """The ``generator`` section of a configuration that points at a fake installation."""
-    return install_fake_generator(tmp_path / "generator")
+def stand_in_generator(tmp_path):
+    """The ``generator`` section of a configuration that points at a stand-in installation."""
+    return install_stand_in_generator(tmp_path / "generator")
+
+
+PLAYED_PROTOCOL = [["REST", 20], ["FOCUS", 20], ["REST", 10], ["FREE", 0]]
+
+
+@pytest.fixture(scope="session")
+def played(tmp_path_factory):
+    """A session over the recording data/synthetic/played, with music and metrics, as the
+    program leaves it: for the tests of what the program reads from a session folder."""
+    root = tmp_path_factory.mktemp("played")
+    return play_session(root, "S01", PLAYED_PROTOCOL, recording="played")
+
+
+@pytest.fixture
+def copied(played, tmp_path):
+    """A copy of the played session that a test may change."""
+    folder = tmp_path / "sessions" / played.directory.name
+    shutil.copytree(played.directory, folder)
+    return folder

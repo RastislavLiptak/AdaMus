@@ -1,6 +1,6 @@
 """The one exception AdaMus raises for problems the operator can fix."""
 
-LINE_END = chr(10)
+from adamus.constants import LINE_END
 
 
 class AdamusError(Exception):

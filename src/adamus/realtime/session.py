@@ -21,12 +21,12 @@ from adamus.detection.focus_detector import Detector, load_models
 from adamus.detection.signal_processing import Steps, design_filters, process
 from adamus.errors import AdamusError
 from adamus.protocol import block_spans
-from adamus.realtime import generator_messages, session_recorder
+from adamus.realtime import generator_messages
 from adamus.realtime.clock import Clock, TimeSource
 from adamus.realtime.eeg_source import HeadsetSource, RecordingSource
 from adamus.realtime.recent_samples import RecentSamples
 from adamus.realtime.session_recorder import SessionRecorder
-from adamus.session_files import (
+from adamus.session_format import (
     EVENT_BLOCK_START,
     EVENT_ERROR,
     EVENT_FUDI,
@@ -47,6 +47,7 @@ from adamus.session_files import (
 )
 
 log = logging.getLogger(__name__)
+STEP_LOG = "step %d: valid=%s score=%s f=%s"  # what a step leaves in adamus.log
 
 
 class EegSource(Protocol):
@@ -66,9 +67,6 @@ class EegSource(Protocol):
 
     @property
     def marker_row(self) -> int: ...
-
-    @property
-    def is_playback(self) -> bool: ...
 
     @property
     def playback_file(self) -> Path | None: ...
@@ -92,15 +90,13 @@ class MusicOutput(Protocol):
 
     def send(self, message: str) -> None: ...
 
-    def copy_stderr_to(self, path: Path | None) -> None: ...
+    def copy_stderr_to(self, session_log: Path | None) -> None: ...
 
 
-class StopKeys(Protocol):
-    """The keys of the operator, as far as a running session reads them."""
+class StopRequest(Protocol):
+    """Set when the operator asks the running session to stop; a threading.Event is one."""
 
-    def stop_requested(self) -> bool: ...
-
-    def discard_pressed_keys(self) -> None: ...
+    def is_set(self) -> bool: ...
 
 
 @dataclass
@@ -109,7 +105,7 @@ class Devices:
 
     source: EegSource
     generator: MusicOutput
-    keyboard: StopKeys
+    stop: StopRequest
     clock: TimeSource
 
 
@@ -117,7 +113,7 @@ class Devices:
 class SessionResult:
     directory: Path
     reason: str  # user, end_of_stream or error
-    interrupted: bool  # ended by [CTRL]+[C], not by [SPACE]
+    interrupted: bool  # ended by a signal such as [CTRL]+[C], not by the operator's request
 
 
 class Session:
@@ -190,8 +186,6 @@ class Session:
         try:
             self._start()
             reason = self._loop()
-        except KeyboardInterrupt:  # [CTRL]+[C] read as a key by the keyboard
-            reason, self._stop_signalled = REASON_USER, True
         except Exception as problem:  # noqa: BLE001 - any failure must end the session cleanly
             self._record_error(problem)
         finishing = (
@@ -222,8 +216,6 @@ class Session:
         source.start(recorder.raw_csv)
         self._streaming = True
         self._event(EVENT_STREAM_START, board_id=source.board_id, fs=self._fs)
-        # A key pressed while the headset was still connecting must not end the session.
-        devices.keyboard.discard_pressed_keys()
         self._stage = STAGE_LOOP
 
     def _put_generator_to_sleep(self) -> None:
@@ -231,12 +223,7 @@ class Session:
         closed still belongs to this session."""
         try:
             self._send(generator_messages.session_end_messages())
-            looks = round(session_recorder.RECORDING_CLOSE_S / session_recorder.RECORDING_LOOK_S)
-            for _ in range(looks):
-                if session_recorder.recording_finished(self._recorder.audio_wav):
-                    break
-                self._devices.clock.sleep(session_recorder.RECORDING_LOOK_S)
-            else:
+            if not self._recorder.wait_for_recording(self._devices.clock.sleep):
                 log.warning("Pd did not finish %s in time", self._recorder.audio_wav.name)
         finally:
             self._devices.generator.copy_stderr_to(None)
@@ -253,7 +240,7 @@ class Session:
 
     def _meta(self) -> SessionFacts:
         source = self._devices.source
-        playback = str(source.playback_file) if source.is_playback else None
+        playback = None if source.playback_file is None else str(source.playback_file)
         return {
             "pd": self._devices.generator.pd_version,
             "board_id": source.board_id,
@@ -262,7 +249,6 @@ class Session:
             "detector_electrodes": list(self._electrodes),
             "timestamp_row": source.timestamp_row,
             "marker_row": source.marker_row,
-            "mode": "playback" if source.is_playback else "live",
             "playback_path": playback,
             "started": self._devices.clock.now(),
         }
@@ -274,7 +260,7 @@ class Session:
         devices, config = self._devices, self._config
         last_sample_at = devices.clock.monotonic()
         while True:  # until the operator, the stream or a failure ends the session
-            if self._stop_signalled or devices.keyboard.stop_requested():
+            if self._stop_signalled or devices.stop.is_set():
                 return REASON_USER
             devices.clock.sleep(config.poll_s)
             before = self._received
@@ -282,7 +268,7 @@ class Session:
             if self._received > before:
                 last_sample_at = devices.clock.monotonic()
             elif devices.clock.monotonic() - last_sample_at >= config.timeouts.stream_s:
-                if devices.source.is_playback:
+                if devices.source.playback_file is not None:  # a recording has ended
                     return REASON_END_OF_STREAM
                 self._stage = STAGE_STREAM
                 raise AdamusError(f"no samples for {config.timeouts.stream_s:g} s")
@@ -368,7 +354,7 @@ class Session:
                 row["t_sent"] = clock.now()
         finally:  # a step whose weights could not be sent is recorded all the same
             self._recorder.tick(row, processed.filtered)
-        log.debug("step %d: valid=%s score=%s f=%s", k, processed.valid, control.score, control.f)
+        log.debug(STEP_LOG, k, processed.valid, control.score, control.f)
 
     # --- Events --------------------------------------------------------------
 
@@ -389,11 +375,14 @@ class Session:
         self._failed = True
         known = isinstance(problem, AdamusError)
         message = str(problem) if known else f"{type(problem).__name__}: {problem}"
-        self._event(EVENT_ERROR, where=self._stage, message=message)
+        try:
+            self._event(EVENT_ERROR, where=self._stage, message=message)
+        except OSError:  # a full disk: the session must still be finished, the generator quiet
+            log.exception("the failure could not be recorded")
 
 
 def real_devices(
-    config: Config, recording: Path | None, generator: MusicOutput, keyboard: StopKeys
+    config: Config, recording: Path | None, generator: MusicOutput, stop: StopRequest
 ) -> Devices:
     """The devices of a real session: the headset, or ``recording`` played back in its place."""
     clock = Clock()
@@ -402,7 +391,7 @@ def real_devices(
         source = HeadsetSource(config.board)
     else:
         source = RecordingSource(config.board, recording.resolve(), clock)
-    return Devices(source, generator, keyboard, clock)
+    return Devices(source, generator, stop, clock)
 
 
 def run_session(

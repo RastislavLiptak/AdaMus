@@ -63,10 +63,12 @@ class Steps:
 
 
 def design_filters(fs: int) -> Filters:
-    notches = np.vstack([tf2sos(*iirnotch(hz, c.NOTCH_QUALITY, fs)) for hz in c.MAINS_HZ])
+    notches = np.vstack(
+        [np.asarray(tf2sos(*iirnotch(hz, c.NOTCH_QUALITY, fs))) for hz in c.MAINS_HZ]
+    )
 
     def band_pass(band: tuple[float, float], order: int) -> np.ndarray:
-        sections = butter(order, band, btype="bandpass", fs=fs, output="sos")
+        sections = np.asarray(butter(order, band, btype="bandpass", fs=fs, output="sos"))
         return np.vstack([notches, sections])
 
     bands = [band_pass(band, c.FILTER_ORDER) for band in c.BANDS_HZ]
@@ -123,10 +125,10 @@ def process(
     assert context.ndim == 2 and context.shape[0] == len(c.DETECTOR_ELECTRODES)
     assert window + max(filters.delays) <= context.shape[1], "too little signal before the window"
     present = present_rows(electrodes)
-    numbers = np.isfinite(context).all(axis=1)
+    numbers = np.asarray(np.isfinite(context).all(axis=1))  # per electrode: only numbers
     x = np.where(numbers[:, None], context, 0.0)
     x = x - x.mean(axis=1, keepdims=True)
-    broadband = sosfilt(filters.broadband, x, axis=1)
+    broadband: np.ndarray = np.asarray(sosfilt(filters.broadband, x, axis=1))
     filtered = np.where(numbers[:, None], broadband[:, -window:], np.nan)
     max_abs_uv = np.abs(filtered).max(axis=1)
     carries_signal = numbers & (np.ptp(x, axis=1) > 0)
@@ -134,7 +136,7 @@ def process(
     covariances = []
     with np.errstate(over="ignore", invalid="ignore"):  # too large a sample: judged below
         for sections in filters.bands:
-            part = sosfilt(sections, x[present], axis=1)[:, -window:]
+            part = np.asarray(sosfilt(sections, x[present], axis=1))[:, -window:]
             covariances.append(part @ part.T / window)
         noise_uv = np.zeros(len(c.DETECTOR_ELECTRODES))
         noise_uv[present] = np.sqrt(np.diag(covariances[c.BANDS_HZ.index(c.NOISE_BAND_HZ)]))

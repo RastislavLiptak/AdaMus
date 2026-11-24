@@ -1,14 +1,13 @@
 """What the headset delivered in a session, stored in the data folder as a recording of the
-dataset OWN_RECORDINGS, so that it can be played again like any other recording."""
+dataset c.OWN_RECORDINGS, so that it can be played again like any other recording."""
 
 from pathlib import Path
 
+from adamus import constants as c
 from adamus.config import Block
 from adamus.datasets import write_recording
-from adamus.evaluation.session_folder import load_session_folder
+from adamus.evaluation.session_reader import load_session_folder
 from adamus.protocol import block_spans
-
-OWN_RECORDINGS = "own_recordings"  # the dataset of the sessions with the headset
 
 
 def recorded_blocks(protocol: list[Block], fs: int, samples: int) -> list[Block]:
@@ -33,6 +32,6 @@ def store_recording(session_folder: Path, datasets_root: Path) -> Path | None:
         return None
     rows = session.meta["electrode_rows"]
     samples = raw.shape[1]
-    blocks = recorded_blocks(session.config.protocol, session.fs, samples)
-    folder = Path(datasets_root) / OWN_RECORDINGS / session.directory.name
+    blocks = recorded_blocks(session.protocol, session.fs, samples)
+    folder = Path(datasets_root) / c.OWN_RECORDINGS / session.directory.name
     return write_recording(folder, list(rows), raw[list(rows.values())], blocks)

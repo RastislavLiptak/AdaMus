@@ -1,13 +1,9 @@
-"""console.session_statistics: the facts the console shows after a session."""
-
-import dataclasses
+"""evaluation.session_statistics: the short facts of a session."""
 
 import pytest
 
-from adamus.console.session_statistics import (
-    statistics_lines,
-    statistics_of,
-)
+from adamus.evaluation.session_reader import load_session_folder
+from adamus.evaluation.session_statistics import statistics_of
 from tests.support.handmade_session_folders import (
     CONTEXT,
     FS,
@@ -18,7 +14,6 @@ from tests.support.handmade_session_folders import (
     tick,
     write_session_folder,
 )
-from tests.support.statistics_examples import FOCUS, example
 
 PROTOCOL = [["REST", 10], ["FOCUS", 10], ["REST", 10], ["FOCUS", 10], ["REST", 10], ["FREE", 0]]
 BLOCK = 10 * FS
@@ -42,24 +37,16 @@ def statistics(tmp_path, raw_config):
     def build(ticks, events=(), reason="user", duration=582.0):
         folder = tmp_path / "sessions" / "20261110-150412_S01"
         session = finished_session_folder(folder, raw_config, ticks, events, reason, duration)
-        return statistics_of(session)
+        return statistics_of(load_session_folder(session))
 
     return build
 
 
 class TestHeader:
-    def test_name_duration_and_reason(self, statistics):
+    def test_duration_and_reason(self, statistics):
         result = statistics(ticks_with({b: 0.2 for b in range(5)}), reason="end_of_stream")
-        assert result.name == "S01"  # the part of the folder name after the time
         assert result.duration_s == 582.0
         assert result.reason == "end_of_stream"
-        assert result.directory.name == "20261110-150412_S01"
-
-    def test_name_may_itself_contain_underscores(self, tmp_path, raw_config):
-        folder = tmp_path / "20261110-150412_pilot_run_2"
-        events = [event("SESSION_START", 100.0), event("SESSION_END", 101.0, reason="user")]
-        result = statistics_of(write_session_folder(folder, raw_config, [], events))
-        assert result.name == "pilot_run_2"
 
     @pytest.mark.parametrize(
         "events",
@@ -68,14 +55,14 @@ class TestHeader:
     )
     def test_record_that_was_cut_off_has_no_duration(self, tmp_path, raw_config, events):
         folder = tmp_path / "20261110-150412_S01"
-        result = statistics_of(write_session_folder(folder, raw_config, [], events))
+        written = write_session_folder(folder, raw_config, [], events)
+        result = statistics_of(load_session_folder(written))
         assert result.duration_s == 0.0
 
     def test_record_without_its_end_is_an_error(self, tmp_path, raw_config):
         folder = tmp_path / "20261110-150412_S01"
-        result = statistics_of(
-            write_session_folder(folder, raw_config, [], [event("SESSION_START", 100.0)])
-        )
+        written = write_session_folder(folder, raw_config, [], [event("SESSION_START", 100.0)])
+        result = statistics_of(load_session_folder(written))
         assert (result.reason, result.verdict, result.detail) == (
             "error",
             "ERROR",
@@ -155,11 +142,6 @@ class TestFocus:
         focus = statistics(free_play([0.25, 0.75, 0.5])).focus
         assert (focus.f_min, focus.f_max, focus.f_mean) == (0.25, 0.75, 0.5)
 
-    def test_latency_is_the_time_from_sample_to_sent_weights(self, statistics):
-        focus = statistics(ticks_with({b: 0.2 for b in range(5)})).focus
-        assert focus.latency_median_s == pytest.approx(0.030)
-        assert focus.latency_high_s == pytest.approx(0.030)
-
 
 class TestCuedBlocks:
     """Every REST and FOCUS block counts; a block whose steps had no f yet decides nothing."""
@@ -206,71 +188,24 @@ class TestCuedBlocks:
         assert statistics(ticks).focus.focus_blocks_on == 1
 
 
-class TestLines:
-    @pytest.mark.parametrize(
-        ("reason", "text"),
-        [("user", "[SPACE]"), ("end_of_stream", "end of file"), ("error", "error")],
-    )  # fmt: skip
-    def test_reason_and_duration(self, reason, text):
-        lines = dict(statistics_lines(example(reason=reason, duration_s=61.4)))
-        assert lines["Duration"] == f"01:01   (ended by {text})"
+class TestFoundSteps:
+    """The share of the steps of each state's blocks in which the detector found that state;
+    a block cut short counts with the steps it got to."""
 
-    def test_no_clean_signal_shows_no_focus_and_no_latency(self):
-        failed = example(
-            verdict="NO CLEAN SIGNAL",
-            detail=NO_CLEAN_SIGNAL,
-            usable_share=0.43,
-            focus=None,
-        )
-        lines = statistics_lines(failed)
-        assert [label for label, _ in lines] == ["Duration", "Result", "Folder"]
-        assert lines[1][1] == (
-            f"NO CLEAN SIGNAL ({NO_CLEAN_SIGNAL}) · signal usable 43 % of the time"
-        )
+    def test_each_state_is_the_share_of_its_steps_that_found_it(self, statistics):
+        focus = statistics(ticks_with({0: 0.2, 1: 0.9, 2: 0.2, 3: 0.1, 4: 0.2})).focus
+        assert (focus.focus_found, focus.rest_found) == (0.5, 1.0)  # the focus blocks are as long
 
-    def test_error_without_any_step(self):
-        error = example(verdict="ERROR", detail="no samples for 5 s", usable_share=None, focus=None)
-        assert dict(statistics_lines(error))["Result"] == "ERROR (no samples for 5 s)"
+    def test_exactly_the_threshold_is_focus_found(self, statistics):
+        focus = statistics(ticks_with({b: 0.5 for b in range(5)})).focus
+        assert (focus.focus_found, focus.rest_found) == (1.0, 0.0)
 
-    def test_blocks_line_is_left_out_when_no_evaluation_block_finished(self):
-        focus = dataclasses.replace(FOCUS, focus_blocks=0, rest_blocks=0, switched_on=1)
-        lines = statistics_lines(example(focus=focus))
-        assert [label for label, _ in lines] == [
-            "Duration",
-            "Result",
-            "Focus",
-            "Focus range",
-            "Latency",
-            "Folder",
-        ]
-        assert lines[2][1] == "switched on 1 time · on 38 % of the time"
+    def test_a_block_cut_short_counts_with_the_steps_it_got_to(self, statistics):
+        into_block_4 = (4 * BLOCK - CONTEXT) // H + 1 + 5
+        ticks = ticks_with({0: 0.2, 1: 0.9, 2: 0.2, 3: 0.9, 4: 0.9}, steps=into_block_4)
+        focus = statistics(ticks).focus
+        assert focus.rest_blocks == 2 and 0 < focus.rest_found < 1  # its five steps found focus
 
-    @pytest.mark.parametrize(
-        ("changes", "text"),
-        [({"focus_blocks": 0, "focus_blocks_on": 0},
-          "FOCUS blocks 0 of 0 on · REST blocks 3 of 3 off"),
-         ({"rest_blocks": 0, "rest_blocks_off": 0},
-          "FOCUS blocks 2 of 3 on · REST blocks 0 of 0 off")],
-    )  # fmt: skip
-    def test_blocks_line_is_shown_when_blocks_of_one_kind_finished(self, changes, text):
-        focus = dataclasses.replace(FOCUS, **changes)
-        assert statistics_lines(example(focus=focus))[3] == ("", text)
-
-    def test_shares_and_times_are_rounded_to_whole_percent_and_milliseconds(self):
-        focus = dataclasses.replace(
-            FOCUS, on_share=0.996, latency_median_s=0.9996, latency_high_s=2.6
-        )
-        lines = dict(statistics_lines(example(focus=focus, usable_share=0.996)))
-        assert lines["Result"] == "OK · signal usable 100 % of the time"
-        assert lines["Focus"] == "switched on 7 times · on 100 % of the time"
-        assert lines["Latency"] == "median 1000 ms, 95th percentile 2600 ms"
-
-    @pytest.mark.parametrize("missing", ["latency_median_s", "latency_high_s"])
-    def test_latency_line_needs_both_of_its_numbers(self, missing):
-        focus = dataclasses.replace(FOCUS, **{missing: None})
-        assert "Latency" not in dict(statistics_lines(example(focus=focus)))
-
-    def test_folder_outside_the_working_directory_is_shown_in_full(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        elsewhere = tmp_path.parent / "other" / "20261110-150412_S01"
-        assert dict(statistics_lines(example(directory=elsewhere)))["Folder"] == str(elsewhere)
+    def test_without_a_block_of_a_state_its_share_is_unknown(self, statistics):
+        focus = statistics(free_play([0.2, 0.9])).focus
+        assert (focus.focus_found, focus.rest_found) == (None, None)

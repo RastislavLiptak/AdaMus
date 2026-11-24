@@ -7,6 +7,7 @@ comes to an end where a headset that falls silent is a fault.
 """
 
 import logging
+import sys
 from pathlib import Path
 from typing import IO, Any
 
@@ -17,13 +18,14 @@ from adamus import datasets
 from adamus.config import Board
 from adamus.errors import AdamusError
 from adamus.realtime.clock import TimeSource
-from adamus.session_files import RAW_SEPARATOR
+from adamus.session_format import RAW_SEPARATOR
 
 log = logging.getLogger(__name__)
 
 NAMES_SEPARATOR = ","  # between the names BrainFlow has for the rows of a board
+UNNAMED_ROW = "EEG "  # then the place of a row of EEG BrainFlow has no name for
 # How the raw file of a recording is written: the samples, the times, the markers.
-RAW_SAMPLE, RAW_TIME, RAW_MARKER = "%.3f", "%.6f", "%g"
+RAW_TIME, RAW_MARKER = "%.6f", "%g"  # the samples as a recording of a dataset has them
 
 
 def _description(board: Board) -> dict[str, Any]:
@@ -46,9 +48,16 @@ def _shim(board: Board) -> BoardShim:
     return BoardShim(board.id, _open_parameters(board))
 
 
+def said_before_bluetooth(what: str) -> None:
+    """Said on the error output before the headset is reached over Bluetooth: macOS ends a
+    program at once that may not use it, and the app shows the last lines the program said."""
+    print(what, file=sys.stderr, flush=True)
+
+
 def headset_is_available(board: Board) -> bool:
     """Try to open a live headset and release it again."""
     shim = _shim(board)
+    said_before_bluetooth(f"Looking for {board.name} over Bluetooth.")
     try:
         shim.prepare_session()
         shim.release_session()
@@ -66,22 +75,25 @@ def electrodes_of_headset(board: Board) -> list[str]:
 class HeadsetSource:
     """Delivers the samples of a live headset, as BrainFlow hands them over."""
 
-    is_playback = False
     playback_file = None
 
     def __init__(self, board: Board) -> None:
         description = _description(board)
         self.board_id = board.id
         self.fs = int(description["sampling_rate"])
-        self.electrode_rows = dict(
-            zip(electrodes_of_headset(board), description["eeg_channels"], strict=False)
-        )
+        names = electrodes_of_headset(board)
+        self.electrode_rows = {  # a row BrainFlow has no name for is named by its place
+            names[index] if index < len(names) else f"{UNNAMED_ROW}{index + 1}": row
+            for index, row in enumerate(description["eeg_channels"])
+        }
         self.timestamp_row = int(description["timestamp_channel"])
         self.marker_row = int(description["marker_channel"])
+        self._name = board.name
         self._shim = _shim(board)
 
     def start(self, raw_csv: Path) -> None:
         """Open the board and start streaming; BrainFlow itself writes ``raw_csv``."""
+        said_before_bluetooth(f"Opening {self._name} over Bluetooth.")
         try:
             self._shim.prepare_session()
             self._shim.add_streamer(f"file://{raw_csv}:w")
@@ -121,8 +133,6 @@ class RecordingSource:
     written to the raw file of the session like the samples of a headset.
     """
 
-    is_playback = True
-
     def __init__(self, board: Board, recording: Path, clock: TimeSource) -> None:
         played = datasets.eeg_of(recording)
         names, samples = datasets.read_recording(played)
@@ -156,7 +166,7 @@ class RecordingSource:
         if len(index) > 0:
             markers[0], self._marker = self._marker, 0.0
         block = np.vstack([self._samples[:, index], times, markers])
-        formats = [RAW_SAMPLE] * len(self.electrode_rows) + [RAW_TIME, RAW_MARKER]
+        formats = [datasets.SAMPLE_FORMAT] * len(self.electrode_rows) + [RAW_TIME, RAW_MARKER]
         np.savetxt(self._raw, block.T, fmt=formats, delimiter=RAW_SEPARATOR)
         return block
 

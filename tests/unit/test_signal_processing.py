@@ -2,7 +2,7 @@
 
 import numpy as np
 import pytest
-from scipy.signal import sosfreqz
+from scipy.signal import sosfilt, sosfreqz
 
 from adamus import constants as c
 from adamus.detection.signal_processing import (
@@ -41,7 +41,7 @@ QUIET = tones([10.0, 10.0, 10.0, 10.0])
 
 def gain(sections, hz):
     _, response = sosfreqz(sections, worN=[hz], fs=FS)
-    return float(abs(response[0]))
+    return float(abs(np.asarray(response)[0]))
 
 
 class TestDurations:
@@ -168,10 +168,8 @@ class TestCovariances:
         assert max(powers[:2] + powers[5:]) < 2.0  # the eye band too
 
     def test_band_covariance_is_that_of_the_filtered_window(self):
-        from scipy.signal import sosfilt
-
         x = QUIET - QUIET.mean(axis=1, keepdims=True)
-        part = sosfilt(FILTERS.bands[2], x, axis=1)[:, -N:]
+        part = np.asarray(sosfilt(FILTERS.bands[2], x, axis=1))[:, -N:]
         assert np.allclose(process(QUIET, N, FILTERS).covariances[2], part @ part.T / N)
 
     def test_covariance_of_the_delayed_copies(self):

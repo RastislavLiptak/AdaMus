@@ -12,7 +12,8 @@ block, rest a whole window inside a break after one (the instruction shown befor
 the next block is left out). A person trains the model of a set of electrodes when
 those electrodes give clean signal at least half of the time. The threshold of a
 model is the one with the best balanced accuracy on people the model had not seen
-(four groups, each scored by a model of the others).
+(four groups, each scored by a model of the others). The people are read, and the models of
+the sets of electrodes fitted, side by side on the processors of the computer (parallel).
 """
 
 import csv
@@ -27,6 +28,7 @@ import numpy as np
 from scipy.optimize import minimize
 
 from adamus import constants as c
+from adamus import parallel
 from adamus.detection.focus_detector import RunningMean, electrode_sets, features, log_vector
 from adamus.detection.signal_processing import (
     Steps,
@@ -36,7 +38,7 @@ from adamus.detection.signal_processing import (
     process,
 )
 
-DATASET = "PhysioNet brain-wearable-monitoring 1.0.0 (Muse, n-back blocks and breaks)"
+TRAINING_DATASET = "PhysioNet brain-wearable-monitoring 1.0.0 (Muse, n-back blocks and breaks)"
 DATASET_URL = "https://physionet.org/content/brain-wearable-monitoring/get-zip/1.0.0/"
 TRAINING_DATA = "training_data"  # in the folder of the model
 DOWNLOAD_CHUNK = 1 << 20  # bytes
@@ -54,15 +56,17 @@ LEAST_STEPS = 30  # of each state, for a person to train a model
 C_REGULARISATION = 0.1  # inverse strength of the squared penalty, as in scikit-learn
 GROUPS = 4  # for the threshold, on people the model had not seen
 ITERATIONS = 3000
+# The memory a process takes: reading one person, and fitting the models of one set of
+# electrodes with everyone read in hand (measured: about 0.5 GB and 1.2 GB).
+READING_MEMORY = parallel.GIGABYTE
+FITTING_MEMORY = 2 * parallel.GIGABYTE
 
 
 def train(folder: Path, log: TextIO) -> Path:
     """Download the data if they are not there yet, train every model, write the file."""
     data = download(folder / TRAINING_DATA, log)
-    people = []
-    for person in sorted(p for p in data.glob("Experiment_*/*") if p.is_dir()):
-        people.append(person_steps(person))
-        print(f"{people[-1]['name']} read", file=log, flush=True)
+    people = read_people(data)
+    print(f"{len(people)} people read", file=log, flush=True)
     written = trained_models(people, log)
     target = folder / c.FOCUS_MODEL_FILE
     target.write_text(json.dumps(written, indent=1), encoding="utf-8")
@@ -71,6 +75,12 @@ def train(folder: Path, log: TextIO) -> Path:
 
 
 # --- The recordings ---------------------------------------------------------------
+
+
+def read_people(data: Path) -> list[dict[str, Any]]:
+    """The steps of every person of the downloaded ``data``, in the order of their folders."""
+    folders = sorted(p for p in data.glob("Experiment_*/*") if p.is_dir())
+    return parallel.spread(person_steps, folders, READING_MEMORY)
 
 
 def download(target: Path, log: TextIO) -> Path:
@@ -112,7 +122,7 @@ def signal_of(person: Path) -> tuple[np.ndarray, np.ndarray, float]:
 
 def blocks_of(person: Path) -> list[tuple[float, float]]:
     """Start and end of every n-back block (practice left out), in seconds since 1970."""
-    with (person / LOG_FILE).open(encoding="utf-8-sig") as handle:
+    with (person / LOG_FILE).open(encoding=c.TEXT_ENCODING) as handle:
         rows = list(csv.DictReader(handle))
     start = float(rows[0]["Start_time_unix"])
     onset_columns = [k for k in rows[0] if k.startswith("Stimulus") and k.endswith(".OnsetTime")]
@@ -279,21 +289,21 @@ def balanced_threshold(values: np.ndarray, states: np.ndarray) -> float:
 
 
 def held_out(
-    people: list[dict[str, Any]], groups: int = GROUPS
+    people: list[dict[str, Any]],
 ) -> list[tuple[list[dict[str, Any]], list[dict[str, Any]]]]:
     """For every group of people: the others, whom a model is fitted on, and the group, whom
     that model scores. Every person is in one group."""
     return [
-        ([p for k, p in enumerate(people) if k % groups != group],
-         [p for k, p in enumerate(people) if k % groups == group])
-        for group in range(groups)
+        ([p for k, p in enumerate(people) if k % GROUPS != group],
+         [p for k, p in enumerate(people) if k % GROUPS == group])
+        for group in range(GROUPS)
     ]  # fmt: skip
 
 
-def threshold_of(people: list[dict[str, Any]], groups: int = GROUPS) -> float:
+def threshold_of(people: list[dict[str, Any]]) -> float:
     """Balanced threshold on the steps of every person, scored by a model of the others."""
     held_values, held_states = [], []
-    for fitted_on, scored in held_out(people, groups):
+    for fitted_on, scored in held_out(people):
         model = fit_people(fitted_on)
         for person in scored:
             x, y = labelled(person, model["prior"])
@@ -315,21 +325,35 @@ def model_entry(people: list[dict[str, Any]], electrodes: tuple[str, ...]) -> di
     }
 
 
+def usable_in_set(
+    people: list[dict[str, Any]], electrodes: tuple[str, ...]
+) -> list[dict[str, Any]]:
+    """The people whose signal of ``electrodes`` can train a model, seen through that set."""
+    return [view for view in (in_set(person, electrodes) for person in people) if usable(view)]
+
+
+def set_model(electrodes: tuple[str, ...]) -> tuple[dict[str, Any], list[str]]:
+    """In a process of its own, with everyone read in hand: the model of one set of electrodes
+    and the names of the people it was trained on."""
+    chosen = usable_in_set(parallel.shared(), electrodes)
+    return model_entry(chosen, electrodes), [person["name"] for person in chosen]
+
+
 def trained_models(people: list[dict[str, Any]], log: TextIO) -> dict[str, Any]:
     """The content of a model file: one model per set of electrodes, of its usable people."""
-    entries, trained_on = [], {}
-    for electrodes in electrode_sets():  # the vectors of one set at a time are in memory
-        chosen = [view for view in (in_set(p, electrodes) for p in people) if usable(view)]
-        entries.append(model_entry(chosen, electrodes))
-        name = "+".join(electrodes)
-        trained_on[name] = len(chosen)
-        print(f"{name} model of {len(chosen)} people", file=log, flush=True)
-        if electrodes == c.DETECTOR_ELECTRODES:
-            everyone = sorted(p["name"] for p in chosen)
+    sets = electrode_sets()
+    made = parallel.spread(set_model, sets, FITTING_MEMORY, shared=people)
+    trained_on = {
+        "+".join(electrodes): len(names) for electrodes, (_, names) in zip(sets, made, strict=True)
+    }
+    for name, count in trained_on.items():
+        print(f"{name} model of {count} people", file=log, flush=True)
+    everyone = sorted(made[sets.index(c.DETECTOR_ELECTRODES)][1])
+    entries = [entry for entry, _ in made]
     return {
         "features": features(),
         "trained_on": {
-            "dataset": DATASET,
+            "dataset": TRAINING_DATASET,
             "people": everyone,
             "left_out": sorted(p["name"] for p in people if p["name"] not in everyone),
             "people per set": trained_on,

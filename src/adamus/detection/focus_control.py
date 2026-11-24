@@ -10,8 +10,10 @@ w_focus = f and w_idle = 1 - f. A step that is not clean keeps the last f.
 
 import math
 from dataclasses import dataclass
+from typing import Protocol
 
-from adamus.detection.focus_detector import Detector
+import numpy as np
+
 from adamus.detection.signal_processing import StepSignal
 from adamus.protocol import BlockSpan, locate_step
 
@@ -44,10 +46,16 @@ def next_level(level: float, score: float) -> float:
     return math.log(before / (1.0 - before)) + score
 
 
+class Scorer(Protocol):
+    """What the control needs of the detector: the score of a clean step."""
+
+    def step(self, covariances: list[np.ndarray]) -> float: ...
+
+
 class Controller:
     """Control state of one session: the detector and the log odds of focus."""
 
-    def __init__(self, spans: list[BlockSpan], window: int, detector: Detector) -> None:
+    def __init__(self, spans: list[BlockSpan], window: int, detector: Scorer) -> None:
         self._spans = spans
         self._window = window
         self._detector = detector

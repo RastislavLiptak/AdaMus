@@ -23,7 +23,7 @@ class ScriptedDetector:
     def __init__(self, scores):
         self._scores, self.taken = list(scores), []
 
-    def step(self, covariances):
+    def step(self, covariances: list[np.ndarray]) -> float:
         self.taken.append(covariances)
         return self._scores.pop(0)
 
@@ -125,7 +125,8 @@ class TestControl:
             level = next_level(level, score)
             assert step.f == pytest.approx(focus_of(level))
             assert step.score == score
-        assert all(s.w_focus == s.f and s.w_idle == pytest.approx(1 - s.f) for s in steps)
+        assert all(s.f is not None for s in steps)
+        assert all(s.w_focus == s.f and s.w_idle == pytest.approx(1 - (s.f or 0)) for s in steps)
 
     def test_an_invalid_step_keeps_the_last_f_and_tells_the_detector_nothing(self):
         steps, detector = run([True, False, False, True], scores=[2.0, -2.0])

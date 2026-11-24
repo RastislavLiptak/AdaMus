@@ -11,9 +11,10 @@ import pytest
 
 from adamus import constants as c
 from adamus.config import parse_config, read_yaml
-from adamus.console.session_statistics import statistics_of
 from adamus.evaluation import metrics
-from adamus.session_files import REASON_END_OF_STREAM
+from adamus.evaluation.session_reader import load_session_folder
+from adamus.evaluation.session_statistics import statistics_of
+from adamus.session_format import REASON_END_OF_STREAM
 from tests.support.finished_sessions import CONTEXT, FS, FinishedSession, H, synthetic_matrix
 from tests.support.project_paths import CONFIG_FILE
 
@@ -92,9 +93,10 @@ class TestMetrics:
 
 class TestStatistics:
     def test_verdict_and_focus(self, session):
-        statistics = statistics_of(session.directory)
+        statistics = statistics_of(load_session_folder(session.directory))
         assert (statistics.verdict, statistics.usable_share) == ("OK", 1.0)
         focus = statistics.focus
+        assert focus is not None
         assert (focus.focus_blocks_on, focus.focus_blocks) == (4, 4)
         assert (focus.rest_blocks_off, focus.rest_blocks) == (4, 4)
         assert focus.switched_on == 30
@@ -110,7 +112,7 @@ class TestTheRawFileIsEnough:
         from brainflow.data_filter import DataFilter
 
         from adamus.config import load_config
-        from tests.support.stand_in_devices import FakeSource
+        from tests.support.stand_in_devices import StandInSource
 
         raw = session.directory / c.FILE_RAW
         again = FinishedSession(
@@ -118,7 +120,7 @@ class TestTheRawFileIsEnough:
             load_config(session.directory / c.FILE_CONFIG),
             None,
             name="again",
-            source=FakeSource(DataFilter.read_file(str(raw))),
+            source=StandInSource(DataFilter.read_file(str(raw))),
         )
         assert len(again.ticks) == len(session.ticks) == 953
         for ours, theirs in zip(again.ticks, session.ticks, strict=True):

@@ -6,10 +6,12 @@ import numpy as np
 import pytest
 
 from adamus import constants as c
+from adamus import datasets
 from adamus.config import Block, read_yaml
 from adamus.datasets import (
     datasets_in,
     electrodes_of_recording,
+    in_name_order,
     read_recording,
     recordings_of,
     write_recording,
@@ -33,6 +35,20 @@ def test_recordings_are_the_folders_with_both_files_in_alphabetical_order(data):
         data / "alpha" / "Subject01",
     ]
     assert recordings_of(data / "empty") == []
+
+
+def test_numbers_in_names_go_by_their_value_and_case_does_not_count(tmp_path):
+    for name in ("S10", "s2", "S1", "T"):
+        write_recording(tmp_path / "set" / name, ["AF7"], np.zeros((1, 4)), [Block("REST", 4 / FS)])
+    assert [folder.name for folder in recordings_of(tmp_path / "set")] == ["S1", "s2", "S10", "T"]
+
+
+@pytest.mark.parametrize("listed", [["S1", "S01", "s1"], ["s1", "S01", "S1"]])
+def test_names_equal_by_their_numbers_and_letters_keep_one_order_and_any_name_is_sorted(listed):
+    folders = [Path(name) for name in [*listed, "S1²"]]  # ² is no number to sort by
+    assert [folder.name for folder in sorted(folders, key=in_name_order)] == [
+        "S01", "S1", "s1", "S1²"
+    ]  # fmt: skip
 
 
 def test_the_order_is_alphabetical_whatever_order_the_folder_lists_them_in(data, monkeypatch):
@@ -122,6 +138,15 @@ class TestWriteRecording:
     def test_microvolts_are_kept_to_three_decimals(self, tmp_path):
         folder = write_recording(tmp_path / "S01", ["AF7"], np.array([[1.23456]]), [])
         assert (folder / c.FILE_DATASET_EEG).read_text().splitlines() == ["AF7", "1.235"]
+
+    def test_a_recording_cut_short_is_no_recording(self, tmp_path, monkeypatch):
+        def interrupted(*_):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(datasets, "write_yaml", interrupted)
+        with pytest.raises(KeyboardInterrupt):
+            write_recording(tmp_path / "S01", ["AF7"], np.zeros((1, 1)), [])
+        assert not (tmp_path / "S01").exists() and recordings_of(tmp_path) == []
 
     def test_a_recording_is_never_written_over(self, tmp_path):
         write_recording(tmp_path / "S01", ["AF7"], np.zeros((1, 1)), [])

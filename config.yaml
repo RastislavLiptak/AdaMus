@@ -13,11 +13,10 @@ protocol:
   - [FOCUS, 60]
   - [REST, 60]
   - [FOCUS, 60]
-  - [FREE, 0]                 # 0 = until [SPACE]
+  - [FREE, 0]                 # 0 = until the session is stopped
 generator:
   folder: models/music_generator  # the program installs the generator here
   model: mrt2_small
-  port: 3000                  # any free local port
   # One piece of music in two forms. While focus is off a piano plays alone; as focus
   # comes on, the orchestra joins it.
   prompt_idle: quiet slow solo piano

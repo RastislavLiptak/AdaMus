@@ -16,16 +16,14 @@ from brainflow.board_shim import BoardShim, BrainFlowError
 from adamus import constants as c
 from adamus.errors import AdamusError
 
-SESSION_NAME = r"[A-Za-z0-9_-]+"
 STYLE_TEXT = r"[a-z][a-z0-9-]*( [a-z][a-z0-9-]*)*"  # Pd would turn a numeric word into a float
-MAX_TCP_PORT = 65535
 INVALID = "invalid configuration:"  # heads the list of what is wrong with one
 LONGEST_S = 24 * 60 * 60  # no block and no wait lasts a day; longer ones overflow in samples
 
 
 @dataclass(frozen=True)
 class Board:
-    name: str  # how the headset is called in the console
+    name: str  # how the headset is called in the program
     id: int  # BrainFlow board id
     serial_number: str
 
@@ -40,7 +38,6 @@ class Block:
 class Generator:
     folder: str  # where scripts/install_generator.sh installed the generator
     model: str  # name of the model, e.g. mrt2_small
-    port: int
     prompt_idle: str
     prompt_focus: str
 
@@ -110,10 +107,6 @@ def write_yaml(data: dict[str, Any], path: Path) -> None:
     Path(path).write_text(text, encoding="utf-8")
 
 
-def is_session_name(name: str) -> bool:
-    return re.fullmatch(SESSION_NAME, name) is not None
-
-
 def is_style_text(text: str) -> bool:
     return re.fullmatch(STYLE_TEXT, text) is not None
 
@@ -173,6 +166,15 @@ def _section(cls: Any, data: Any, name: str, problems: list[str]) -> Any:
     return None if found else cls(**data)
 
 
+def parse_protocol(data: Any) -> list[Block]:
+    """The protocol alone, checked as in a whole configuration."""
+    problems: list[str] = []
+    protocol = _protocol(data, problems)
+    if problems:
+        raise AdamusError(INVALID, *(f"  {problem}" for problem in problems))
+    return protocol
+
+
 def _protocol(data: Any, problems: list[str]) -> list[Block]:
     is_list_of_lists = type(data) is list and all(type(item) is list for item in data)
     if not is_list_of_lists or not data or any(len(item) != 2 for item in data):
@@ -199,9 +201,12 @@ def _failed(checks: list[tuple[bool, str]]) -> list[str]:
 
 def _range_problems(generator: Generator, timeouts: Timeouts, poll_s: float) -> list[str]:
     """Each value on its own: is it in the range that makes sense?"""
-    every_timeout = (timeouts.stream_s, timeouts.pd_connect_s, timeouts.model_load_s)
+    every_timeout = (
+        timeouts.stream_s,
+        timeouts.pd_connect_s,
+        timeouts.model_load_s,
+    )
     checks = [
-        (0 < generator.port <= MAX_TCP_PORT, "generator.port: must be a TCP port"),
         (generator.folder != "", "generator.folder: must name a folder"),
         (generator.model != "" and "/" not in generator.model,
          "generator.model: must be the name of a model, not a path"),
@@ -217,7 +222,7 @@ def _range_problems(generator: Generator, timeouts: Timeouts, poll_s: float) -> 
 
 
 def _board_problems(board: Board) -> list[str]:
-    """Does BrainFlow know the board, and has it a name for the console?"""
+    """Does BrainFlow know the board, and has it a name to be shown by?"""
     try:
         BoardShim.get_board_descr(board.id)
     except BrainFlowError:

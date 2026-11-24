@@ -6,28 +6,45 @@ program. The project folder has a space in its name.
 """
 
 import json
+import threading
+from pathlib import Path
 
 import numpy as np
 import pytest
 import soundfile
 
 from adamus import constants as c
-from adamus.config import read_yaml, write_yaml
+from adamus.config import load_config, read_yaml, write_yaml
 from adamus.evaluation.metrics import analyze
-from adamus.session_files import REASON_END_OF_STREAM
-from tests.support.batch_session import run_batch_session
-from tests.support.console_runs import place_focus_model
-from tests.support.fake_generator_files import install_fake_generator
-from tests.support.finished_sessions import read_lines, synthetic_signals
+from adamus.realtime.music_generator import MusicGenerator
+from adamus.realtime.session import SessionResult, real_devices, run_session
+from adamus.session_format import REASON_END_OF_STREAM, read_jsonl
+from tests.support.finished_sessions import synthetic_signals
 from tests.support.project_paths import CONFIG_FILE, require_reference_model
+from tests.support.stand_in_generator_files import install_stand_in_generator
+from tests.support.stand_in_machine import place_focus_model
 from tests.support.synthetic_dataset import write_recording
 
-pytestmark = pytest.mark.realtime
+# A session in real time takes its time: run by the full run only.
+pytestmark = pytest.mark.slow
 
 # The music follows the blocks from the first step on.
 PROTOCOL = [["REST", 20], ["FOCUS", 20], ["REST", 20], ["FOCUS", 20]]
 SECONDS = 80
 STEPS = (SECONDS * 256 - 2 * 512) // 128 + 1
+
+
+def run_batch_session(config_path: Path, name: str, recording: Path) -> SessionResult:
+    """Start the generator, play ``recording`` through one session, stop the generator: the
+    program without its app."""
+    config = load_config(config_path)
+    generator = MusicGenerator(config.generator, config.timeouts, lambda kind, /, **fields: None)
+    try:
+        generator.start()
+        devices = real_devices(config, recording, generator, threading.Event())  # never set
+        return run_session(config, name, devices, c.SESSIONS_DIR, lambda folder: None)
+    finally:
+        generator.stop()
 
 
 @pytest.fixture(scope="module")
@@ -37,15 +54,14 @@ def runs(tmp_path_factory, request):
     work.mkdir()
     raw = read_yaml(CONFIG_FILE)
     raw["protocol"] = PROTOCOL
-    raw["generator"].update(install_fake_generator(work / "generator"))
+    raw["generator"].update(install_stand_in_generator(work / "generator"))
     place_focus_model(work)
     raw["timeouts"]["stream_s"] = 2
     write_yaml(raw, work / "config.yaml")
     patcher = pytest.MonkeyPatch()
     request.addfinalizer(patcher.undo)
     patcher.chdir(work)
-    blocks = [tuple(block) for block in PROTOCOL]
-    write_recording(work / "data" / "simulated" / "short", synthetic_signals(PROTOCOL), blocks)
+    write_recording(work / "data" / "simulated" / "short", synthetic_signals(PROTOCOL), PROTOCOL)
 
     def run(name, recording, config):
         result = run_batch_session(config, name, recording)
@@ -62,13 +78,13 @@ def runs(tmp_path_factory, request):
 
 def test_session_ends_with_the_recording(runs):
     assert runs["first"]["reason"] == REASON_END_OF_STREAM
-    events = read_lines(runs["first"]["folder"] / c.FILE_EVENTS)
+    events = read_jsonl(runs["first"]["folder"] / c.FILE_EVENTS)
     assert events[-1]["reason"] == REASON_END_OF_STREAM
     assert events[-1]["n"] == SECONDS * 256
 
 
 def test_session_folder_holds_every_file(runs):
-    """A session without the console: no console.jsonl (test_console_session has it)."""
+    """A session without the user interface: no activity.jsonl."""
     assert {path.name for path in runs["first"]["folder"].iterdir()} == {
         "config.yaml", "focus_model.json", "meta.json", "raw.csv", "filtered.f32", "ticks.jsonl",
         "events.jsonl", "audio.wav", "pd.log", "adamus.log", "metrics.json",
@@ -77,10 +93,10 @@ def test_session_folder_holds_every_file(runs):
 
 def test_meta_describes_the_run(runs):
     meta = json.loads((runs["first"]["folder"] / c.FILE_META).read_text())
-    assert (meta["mode"], meta["board_id"], meta["fs"]) == ("playback", 38, 256)
+    assert (meta["playback_path"] is not None, meta["board_id"], meta["fs"]) == (True, 38, 256)
     played = runs["work"] / "data" / "simulated" / "short" / "eeg.csv"
     assert meta["playback_path"] == str(played.resolve())
-    assert meta["pd"] == "Pd-0.57-0 (fake)"
+    assert meta["pd"] == "Pd-0.57-0 (stand-in)"
 
 
 def test_every_sample_was_received_and_processed(runs):

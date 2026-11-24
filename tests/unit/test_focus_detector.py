@@ -3,6 +3,7 @@
 import json
 import math
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -144,8 +145,10 @@ class TestRunningMean:
 
 def model_of(electrodes=EVERY, **changes):
     size = vector_length(len(electrodes))
-    values = {"prior": np.zeros(size), "mean": np.zeros(size), "scale": np.ones(size),
-              "coef": np.zeros(size), "intercept": 0.0, "threshold": 0.0}  # fmt: skip
+    values: dict[str, Any] = {
+        "prior": np.zeros(size), "mean": np.zeros(size), "scale": np.ones(size),
+        "coef": np.zeros(size), "intercept": 0.0, "threshold": 0.0,
+    }  # fmt: skip
     values.update(changes)
     return FocusModel(tuple(electrodes), **values)
 
@@ -173,7 +176,7 @@ class TestShippedModels:
         assert raw["features"] == features()
         trained_on = raw["trained_on"]
         assert all(type(person) is str for person in trained_on["people"])
-        assert trained_on["dataset"] == focus_training.DATASET
+        assert trained_on["dataset"] == focus_training.TRAINING_DATASET
         assert not set(trained_on["left_out"]) & set(trained_on["people"])
 
     def test_every_model_was_trained_on_twenty_people_or_more(self):

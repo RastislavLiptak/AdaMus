@@ -7,11 +7,11 @@ from hypothesis import example, given
 from hypothesis import strategies as st
 
 from adamus.realtime import generator_messages
-from tests.support import fake_pure_data
+from tests.support import stand_in_pure_data
 from tests.support.finished_sessions import config_with
 
 CONFIG = config_with().generator
-FOCUS = "fast loud piano concerto with full symphony orchestra brass and timpani"
+IDLE, FOCUS = CONFIG.prompt_idle, CONFIG.prompt_focus
 
 
 def test_message_is_atoms_joined_by_spaces_and_ended_by_a_semicolon():
@@ -30,7 +30,7 @@ def test_recording_messages():
 class TestStepMessages:
     def test_slot_0_is_the_quiet_form_and_slot_1_the_full_form_of_the_music(self):
         assert generator_messages.step_messages(CONFIG, 0.25, 0.75) == [
-            "prompt 0 quiet slow solo piano 0.250;",
+            f"prompt 0 {IDLE} 0.250;",
             f"prompt 1 {FOCUS} 0.750;",
         ]
 
@@ -68,7 +68,7 @@ class TestSessionMessages:
         audio = Path("/tmp/sessions/20261110-150412_S01/audio.wav")
         assert generator_messages.session_start_messages(CONFIG, audio) == [
             "reset;",
-            "prompt 0 quiet slow solo piano 1.000;",
+            f"prompt 0 {IDLE} 1.000;",
             f"prompt 1 {FOCUS} 0.000;",
             "rec open /tmp/sessions/20261110-150412_S01/audio.wav;",
             "rec start;",
@@ -111,7 +111,7 @@ class TestPathAtom:
     def test_pd_reads_any_folder_name_back_as_one_atom(self, name):
         """The stand-in for Pd splits messages the way Pd does."""
         path = Path("/sessions") / name / "audio.wav"
-        messages, rest = fake_pure_data.parse(
+        messages, rest = stand_in_pure_data.parse(
             generator_messages.fudi("rec", "open", generator_messages.path_atom(path))
         )
         assert messages == [["rec", "open", str(path.absolute())]] and rest == ""

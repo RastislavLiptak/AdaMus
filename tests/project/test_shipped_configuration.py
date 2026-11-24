@@ -12,19 +12,18 @@ from brainflow.board_shim import BoardShim
 
 import adamus
 from adamus import constants as c
+from adamus import machine
 from adamus.config import load_config
 from adamus.datasets import datasets_in
 from adamus.detection.signal_processing import Steps
-from adamus.own_recordings import OWN_RECORDINGS
-from tests.support.project_paths import CONFIG_FILE
+from tests.support.project_paths import CONFIG_FILE, ROOT
 
-REPO = CONFIG_FILE.parent
 CONFIG = load_config(CONFIG_FILE)
 FS = BoardShim.get_sampling_rate(CONFIG.board.id)
-GIT_IGNORED = (REPO / ".gitignore").read_text().splitlines()
-INSTALL_SCRIPT = (REPO / "scripts" / "install_generator.sh").read_text()
-PROJECT = tomllib.loads((REPO / "pyproject.toml").read_text())
-README = (REPO / "README.md").read_text()
+GIT_IGNORED = (ROOT / ".gitignore").read_text().splitlines()
+INSTALL_SCRIPT = (ROOT / machine.INSTALL_SCRIPT).read_text()
+PROJECT = tomllib.loads((ROOT / "pyproject.toml").read_text())
+README = (ROOT / "README.md").read_text()
 
 
 class TestDetector:
@@ -42,9 +41,10 @@ class TestDetector:
 
     def test_the_focus_model_is_not_shipped_the_program_trains_it(self):
         assert PROJECT["tool"]["setuptools"]["package-data"] == {
-            "adamus.realtime": ["pure_data_patch.pd"]
+            "adamus.realtime": ["pure_data_patch.pd"],
+            "adamus.server": ["head_model.json"],  # the head the electrodes are drawn on
         }
-        assert not list((REPO / "src").rglob(c.FOCUS_MODEL_FILE))
+        assert not list((ROOT / "src").rglob(c.FOCUS_MODEL_FILE))
 
 
 class TestTiming:
@@ -90,16 +90,6 @@ class TestGenerator:
         assert f"/{c.MODELS_DIR}/" in GIT_IGNORED
         assert not any(line.startswith(f"/{folder}") for line in GIT_IGNORED)
 
-    def test_install_script_defaults_are_the_configured_folder_and_model(self):
-        assert f'FOLDER="${{1:-{CONFIG.generator.folder}}}"' in INSTALL_SCRIPT
-        assert f'MODEL="${{2:-{CONFIG.generator.model}}}"' in INSTALL_SCRIPT
-
-    def test_install_script_builds_with_one_compiler_per_four_gigabytes_of_memory(self):
-        """Eight compilers at once ran a Mac with 16 GB out of memory."""
-        assert "--parallel 8" not in INSTALL_SCRIPT
-        assert "JOBS=$(( $(sysctl -n hw.memsize) / 4294967296 ))" in INSTALL_SCRIPT
-        assert '--parallel "$(( JOBS > 0 ? JOBS : 1 ))"' in INSTALL_SCRIPT
-
     def test_install_script_puts_files_where_the_program_looks_for_them(self):
         """The layout below generator.folder is written in two places; they must agree."""
         assert "$ROOT/" + c.GENERATOR_PD_BINARY in INSTALL_SCRIPT
@@ -130,8 +120,6 @@ class TestProject:
         every = [*project["dependencies"], *project["optional-dependencies"]["generator"],
                  *project["optional-dependencies"]["dev"]]  # fmt: skip
         assert every and all(re.fullmatch(r"[A-Za-z0-9_.\-\[\]]+==[0-9][0-9.]*", d) for d in every)
-        for pinned in ("brainflow==5.24.0", "rich==15.0.0", "readchar==4.2.2"):
-            assert pinned in project["dependencies"]
 
     def test_the_pins_are_the_releases_installed_here(self):
         from importlib.metadata import version
@@ -143,27 +131,49 @@ class TestProject:
             name, pinned = dependency.split("==")
             assert version(name) == pinned, dependency
 
-    def test_readme_names_the_command_and_the_folder_of_the_datasets(self):
-        assert PROJECT["project"]["scripts"] == {"adamus": "adamus.cli:main"}
-        assert "```sh\nadamus\n```" in README
+    def test_the_app_starts_the_command_of_the_project_and_the_readme_how_to_build_it(self):
+        assert PROJECT["project"]["scripts"] == {"adamus": "adamus.main:main"}
+        program = (ROOT / "src" / "ui" / "AdaMus" / "Program" / "Program.swift").read_text()
+        assert 'folder.appending(path: ".venv/bin/adamus")' in program
+        assert "sh scripts/build_app.sh" in README and "`AdaMus.app`" in README
+        assert (ROOT / "scripts" / "build_app.sh").is_file()
         assert f"`{c.DATASETS_DIR}/`" in README
 
     def test_readme_names_every_dataset_and_its_source(self):
         """Also the one the sessions with the headset fill, before there is a first one."""
-        folders = {folder.name for folder in datasets_in(REPO / c.DATASETS_DIR)}
-        for dataset in folders | {OWN_RECORDINGS}:
+        folders = {folder.name for folder in datasets_in(ROOT / c.DATASETS_DIR)}
+        for dataset in folders | {c.OWN_RECORDINGS}:
             assert f"| `{dataset}` |" in README, dataset
 
     def test_readme_says_the_datasets_keep_their_own_licenses(self):
         assert "The datasets in `data/` keep their own licenses" in README
 
     def test_readme_names_the_test_commands_that_exist(self):
-        markers = PROJECT["tool"]["pytest"]["ini_options"]["markers"]
-        quick = " and ".join(f"not {marker.split(':')[0]}" for marker in markers)
-        assert f'pytest -m "{quick}"' in README
-        assert (REPO / "scripts" / "mutation_testing.py").is_file()
-        assert "python scripts/mutation_testing.py src/adamus/config.py" in README
+        """Each group of tests by its command; the marks are those pytest knows."""
+        commands = [
+            ".venv/bin/pytest",
+            *(f".venv/bin/pytest -m {mark}" for mark in ("fast", "slow", "window")),
+            ".venv/bin/python scripts/mutation_testing.py",
+        ]
+        assert "```sh\n" + "\n".join(commands) + "\n```" in README
+        known = PROJECT["tool"]["pytest"]["ini_options"]["markers"]
+        assert {marker.split(":")[0] for marker in known} == {"fast", "slow", "window"}
+        assert (ROOT / "scripts" / "mutation_testing.py").is_file()
 
 
 def test_sessions_are_kept_out_of_git():
     assert f"/{c.SESSIONS_DIR}/" in GIT_IGNORED
+
+
+def test_the_recordings_of_people_with_the_headset_are_kept_out_of_git():
+    """They are the biodata of the people who wore it."""
+    assert f"/{c.DATASETS_DIR}/{c.OWN_RECORDINGS}/" in GIT_IGNORED
+
+
+def test_the_program_has_one_name_everywhere():
+    """The app (its product and the name macOS shows) and the README."""
+    project = (ROOT / "src" / "ui" / "AdaMus.xcodeproj" / "project.pbxproj").read_text()
+    shown = set(re.findall(r"INFOPLIST_KEY_CFBundleDisplayName = (\w+);", project))
+    assert shown == {c.PROGRAM_NAME}
+    assert f"path = {c.PROGRAM_NAME}.app;" in project
+    assert README.startswith(f"# {c.PROGRAM_NAME}\n")

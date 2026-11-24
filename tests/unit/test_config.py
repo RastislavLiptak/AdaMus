@@ -7,15 +7,17 @@ import pytest
 
 from adamus.config import (
     Block,
-    is_session_name,
     is_style_text,
     load_config,
     parse_config,
+    parse_protocol,
     read_yaml,
     write_yaml,
 )
 from adamus.errors import AdamusError
 from tests.support.project_paths import CONFIG_FILE
+
+SHIPPED_IDLE = read_yaml(CONFIG_FILE)["generator"]["prompt_idle"]
 
 
 class TestRepositoryConfiguration:
@@ -35,11 +37,7 @@ class TestRepositoryConfiguration:
 
     def test_generator(self, config):
         generator = config.generator
-        assert (generator.folder, generator.model, generator.port) == (
-            "models/music_generator",
-            "mrt2_small",
-            3000,
-        )
+        assert (generator.folder, generator.model) == ("models/music_generator", "mrt2_small")
         assert generator.prompt_idle == "quiet slow solo piano"
         assert (
             generator.prompt_focus
@@ -117,7 +115,7 @@ class TestStructure:
         "path",
         [
             "board.name", "board.id", "board.serial_number", "generator.folder", "generator.model",
-            "generator.port", "generator.prompt_idle", "generator.prompt_focus",
+            "generator.prompt_idle", "generator.prompt_focus",
             "timeouts.stream_s", "timeouts.pd_connect_s", "timeouts.model_load_s",
         ],
     )  # fmt: skip
@@ -175,7 +173,7 @@ class TestTypes:
             ("board", "serial_number", 5), ("board", "name", 2),
             ("generator", "folder", None),
             ("generator", "model", 2),
-            ("generator", "port", "3000"), ("generator", "prompt_idle", 7),
+            ("generator", "prompt_idle", 7),
             ("timeouts", "stream_s", "5"), ("timeouts", "model_load_s", [120]),
         ],
     )  # fmt: skip
@@ -201,7 +199,11 @@ class TestTypes:
         ]
 
     def test_whole_numbers_are_accepted_where_a_number_is_expected(self, raw_config):
-        raw_config["timeouts"] = {"stream_s": 5, "pd_connect_s": 30, "model_load_s": 120}
+        raw_config["timeouts"] = {
+            "stream_s": 5,
+            "pd_connect_s": 30,
+            "model_load_s": 120,
+        }
         assert parse_config(raw_config).timeouts.model_load_s == 120
 
 
@@ -215,10 +217,8 @@ class TestRanges:
             ("generator", "model", "models/mrt2_small.mlxfn",
              "generator.model: must be the name of a model, not a path"),
             ("generator", "model", "", "generator.model: must be the name of a model, not a path"),
-            ("generator", "prompt_focus", "quiet slow solo piano",
+            ("generator", "prompt_focus", SHIPPED_IDLE,  # the same as prompt_idle
              "generator.prompt_idle, prompt_focus: must be two different styles"),
-            ("generator", "port", 0, "generator.port: must be a TCP port"),
-            ("generator", "port", 65536, "generator.port: must be a TCP port"),
             ("generator", "prompt_idle", "disco 80",
              "generator.prompt_idle: not a valid style text"),
             ("generator", "prompt_focus", "Disco",
@@ -237,8 +237,7 @@ class TestRanges:
 
     @pytest.mark.parametrize(
         ("section", "key", "value"),
-        [("generator", "port", 1), ("generator", "port", 65535),
-         ("generator", "folder", "tools/generator-2"),
+        [("generator", "folder", "tools/generator-2"),
          ("generator", "folder", "../generator"),
          ("generator", "folder", "My Music/the generator; $1, new"),
          ("generator", "folder", "/opt/adamus.v2/generator"),
@@ -250,7 +249,9 @@ class TestRanges:
         assert getattr(getattr(parse_config(raw_config), section), key) == value
 
     def test_timeouts_shorter_than_a_second_are_allowed(self, raw_config):
-        raw_config["timeouts"] = {"stream_s": 0.5, "pd_connect_s": 0.5, "model_load_s": 0.5}
+        raw_config["timeouts"] = {
+            "stream_s": 0.5, "pd_connect_s": 0.5, "model_load_s": 0.5
+        }  # fmt: skip
         assert parse_config(raw_config).timeouts.model_load_s == 0.5
 
     def test_poll_s_must_be_positive(self, raw_config):
@@ -331,14 +332,6 @@ class TestNames:
         """Pd would turn a numeric atom into a float and mrt2~ would drop it silently."""
         assert not is_style_text(text)
 
-    @pytest.mark.parametrize("name", ["S01", "s01-second", "a_b", "0"])
-    def test_valid_session_names(self, name):
-        assert is_session_name(name)
-
-    @pytest.mark.parametrize("name", ["", "S 01", "S01/", "é", "a.b", "a;b", "S01\n"])
-    def test_invalid_session_names(self, name):
-        assert not is_session_name(name)
-
 
 def test_parsing_does_not_modify_its_input(raw_config):
     before = copy.deepcopy(raw_config)
@@ -397,3 +390,18 @@ def test_problem_of_several_lines_reads_as_one_line_each():
     problem = AdamusError("invalid configuration:", "  poll_s: must be positive")
     assert str(problem) == "invalid configuration:\n" + "  poll_s: must be positive"
     assert str(AdamusError("one line")) == "one line"
+
+
+class TestProtocolAlone:
+    """parse_protocol: the protocol of a session folder, read without the rest of its copy."""
+
+    def test_a_valid_protocol_is_read_into_blocks(self):
+        blocks = parse_protocol([["REST", 30], ["FOCUS", 30.5], ["FREE", 0]])
+        assert [(b.label, b.duration_s) for b in blocks] == [
+            ("REST", 30), ("FOCUS", 30.5), ("FREE", 0),
+        ]  # fmt: skip
+
+    @pytest.mark.parametrize("protocol", [None, [], [["NAP", 3]], [["FREE", 0], ["REST", 1]]])
+    def test_an_invalid_protocol_says_what_is_wrong(self, protocol):
+        with pytest.raises(AdamusError, match="invalid configuration:"):
+            parse_protocol(protocol)

@@ -51,13 +51,16 @@ def test_a_dropout_is_one_model_frame_of_silence():
 def test_patch_is_the_seven_objects_and_nine_connections_with_one_port_to_fill_in():
     assert music_generator.PATCH_TEMPLATE.read_text().splitlines() == [
         "#N canvas 0 0 420 260 12;",
-        "#X obj 30 20 netreceive {port};",
+        "#X obj 30 20 netreceive;",
         "#X obj 30 60 route rec;",
         "#X obj 150 100 mrt2~;",
         "#X obj 30 150 writesf~ 2;",
         "#X obj 150 190 dac~;",
         "#X obj 290 60 sel 0;",  # the number of connections falls to 0 ...
         "#X msg 290 100 \\; pd quit;",  # ... and Pd quits
+        "#X obj 290 140 loadbang;",  # it listens on this computer only, from its start
+        "#X msg 290 180 listen {port} {host};",
+        "#X obj 290 30 change;",  # not the 0 it says as it begins to listen
         "#X connect 0 0 1 0;",
         "#X connect 1 0 3 0;",
         "#X connect 1 1 2 0;",
@@ -65,10 +68,13 @@ def test_patch_is_the_seven_objects_and_nine_connections_with_one_port_to_fill_i
         "#X connect 2 1 3 1;",
         "#X connect 2 0 4 0;",
         "#X connect 2 1 4 1;",
-        "#X connect 0 1 5 0;",
+        "#X connect 0 1 9 0;",
+        "#X connect 9 0 5 0;",
         "#X connect 5 0 6 0;",
+        "#X connect 7 0 8 0;",
+        "#X connect 8 0 0 0;",
     ]
-    assert music_generator.PATCH_PORT == "{port}"
+    assert (music_generator.PATCH_PORT, music_generator.PATCH_HOST) == ("{port}", "{host}")
 
 
 def test_fatal_lines_do_not_match_the_harmless_variants_of_mrt2():

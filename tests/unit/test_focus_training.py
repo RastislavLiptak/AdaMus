@@ -475,17 +475,10 @@ class TestDownload:
     def serve(self, monkeypatch, content):
         asked = []
 
-        class Response(io.BytesIO):
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *problem):
-                return False
-
         def urlopen(url, timeout):
             asked.append(url)
             self.timeouts.append(timeout)
-            return Response(content)
+            return io.BytesIO(content)  # read in a with block, as a response is
 
         self.timeouts = []
 
@@ -550,9 +543,9 @@ class TestTrain:
         assert len(trained_on["people"]) == 4
         assert trained_on["people per set"]["AF8+TP9+TP10"] == 5  # the dead AF7 is not in it
         lines = log.getvalue().splitlines()
-        assert lines[0] == "Experiment_1/Person00 read"
-        assert lines[5] == "AF7 model of 4 people"
-        assert lines[9] == "AF7+AF8 model of 4 people"
+        assert lines[0] == "5 people read"
+        assert lines[1] == "AF7 model of 4 people"
+        assert lines[5] == "AF7+AF8 model of 4 people"
         assert lines[-1] == f"written: {target}"
         assert log.every_line_flushed()  # the log shows how far a long training got
-        assert trained_on["dataset"] == train.DATASET
+        assert trained_on["dataset"] == train.TRAINING_DATASET

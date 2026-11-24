@@ -8,7 +8,9 @@ correlated as theirs were. The recording in the data folder of the project (data
 this signal for the default protocol.
 """
 
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from brainflow.board_shim import BoardShim
@@ -18,7 +20,7 @@ from adamus import datasets
 from adamus.config import Block, Config
 from adamus.errors import AdamusError
 
-Protocol = list[tuple[str, float]]  # (label, seconds) of every block
+Protocol = Sequence[Sequence[Any]]  # [label, seconds] of every block, as config.yaml has it
 TIME_ORIGIN = 1.7e9  # time of the first sample
 PACKAGE_MODULO = 256  # the package number of a board counts modulo this
 SEED = 0
@@ -135,13 +137,13 @@ def write_recording(folder: Path, signals: np.ndarray, protocol: Protocol) -> Pa
     """A recording folder of the signals of the detector's electrodes and their protocol,
     written as the program writes every recording of a dataset."""
     names = detector_electrodes_of(signals)
-    blocks = [Block(label, seconds) for label, seconds in protocol]
+    blocks = [Block(str(label), float(seconds)) for label, seconds in protocol]
     return datasets.write_recording(Path(folder), names, signals, blocks)
 
 
 def detector_electrodes_of(signals: np.ndarray) -> list[str]:
     """The names of the rows of ``signals``: the electrodes of the detector, one per row."""
-    names = list(c.DETECTOR_ELECTRODES)
+    names: list[str] = list(c.DETECTOR_ELECTRODES)
     if signals.ndim != 2 or signals.shape[0] != len(names):
         raise AdamusError(f"the signals of the {len(names)} electrodes of the detector are needed")
     return names

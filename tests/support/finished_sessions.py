@@ -1,7 +1,7 @@
 """Running a whole session over prepared data, with stand-ins for all devices."""
 
-import json
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -10,10 +10,10 @@ from adamus.config import parse_config, read_yaml
 from adamus.detection.signal_processing import Steps
 from adamus.realtime.eeg_source import RecordingSource
 from adamus.realtime.session import Devices, Session
-from adamus.session_files import EVENT_ERROR, EVENT_FUDI
+from adamus.session_format import EVENT_ERROR, EVENT_FUDI, read_jsonl
 from tests.support import synthetic_dataset
 from tests.support.project_paths import CONFIG_FILE
-from tests.support.stand_in_devices import FakeClock, FakeGenerator, FakeSource, StopKey
+from tests.support.stand_in_devices import StandInClock, StandInGenerator, StandInSource, StopWhen
 from tests.support.synthetic_dataset import board_matrix
 
 FS = c.DETECTOR_FS  # of Muse 2, the headset of the configuration
@@ -43,10 +43,6 @@ def synthetic_matrix(protocol, tail_s=0):
     return board_matrix(signals, config_with())
 
 
-def read_lines(path):
-    return [json.loads(line) for line in Path(path).read_text().splitlines()]
-
-
 class FinishedSession:
     """One session run to its end, and everything it left behind."""
 
@@ -54,21 +50,22 @@ class FinishedSession:
                  generator=None, source=None, recording=None, clock=None,
                  **source_options):  # fmt: skip
         """Over a board matrix of the stand-in headset, or over the ``recording`` of a dataset."""
-        self.clock = clock or FakeClock()
+        self.root = Path(root)
+        self.clock = clock or StandInClock()
         if recording is not None:
             source = RecordingSource(config.board, recording, self.clock)
-        self.source = source or FakeSource(matrix, **source_options)
-        self.generator = generator or FakeGenerator()
+        # the stand-in headset, whose notes the tests read, or the source of a recording
+        self.source: Any = source or StandInSource(matrix, **source_options)
+        self.generator = generator or StandInGenerator()
         self._stop_after_steps = stop_after_steps
-        self.keyboard = StopKey(self._enough_steps, lambda: self.directory / c.FILE_EVENTS)
-        devices = Devices(self.source, self.generator, self.keyboard, self.clock)
+        devices = Devices(self.source, self.generator, StopWhen(self._enough_steps), self.clock)
         self._session = Session(config, name, devices, Path(root) / "sessions")
         self.directory = self._session.directory
         self.result = self._session.run()
         if recording is not None:
             self.source.close()  # as run_session does; it holds the raw file open
-        self.ticks = read_lines(self.directory / c.FILE_TICKS)
-        self.events = read_lines(self.directory / c.FILE_EVENTS)
+        self.ticks = read_jsonl(self.directory / c.FILE_TICKS)
+        self.events = read_jsonl(self.directory / c.FILE_EVENTS)
 
     def _enough_steps(self):
         if self._stop_after_steps is None:

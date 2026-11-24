@@ -6,16 +6,16 @@ import pytest
 
 from adamus import constants as c
 from adamus.config import Block, read_yaml
-from adamus.console.data_sources import session_config
 from adamus.datasets import electrodes_of_recording
 from adamus.errors import AdamusError
-from adamus.own_recordings import OWN_RECORDINGS, recorded_blocks, store_recording
-from adamus.session_files import REASON_USER
-from tests.support.console_runs import LIVE_PROTOCOL
+from adamus.own_recordings import recorded_blocks, store_recording
+from adamus.session_format import REASON_USER
+from adamus.session_sources import session_config
 from tests.support.finished_sessions import FS, FinishedSession, config_with, synthetic_matrix
-from tests.support.stand_in_devices import FakeSource
+from tests.support.stand_in_devices import StandInSource
+from tests.support.stand_in_machine import LIVE_PROTOCOL
 
-# The protocols of the sessions: [SPACE] in the second FOCUS block, at 114 s; or after free
+# The protocols of the sessions: stopped in the second FOCUS block, at 114 s; or after free
 # play has begun, at 130 s, as in the configuration of the project, which ends with free play.
 WITH_FREE_PLAY = [*LIVE_PROTOCOL, ["FREE", 0]]
 SESSIONS = {"stopped in a block": (LIVE_PROTOCOL, 220, 0), "free play": (WITH_FREE_PLAY, 252, 20)}
@@ -26,7 +26,7 @@ def live_and_again(tmp_path_factory, request):
     protocol, stopped_at_step, free_play_s = SESSIONS[request.param]
     root = tmp_path_factory.mktemp("own")
     config = config_with(protocol)
-    source = FakeSource(synthetic_matrix(protocol, tail_s=free_play_s), live=True)
+    source = StandInSource(synthetic_matrix(protocol, tail_s=free_play_s), live=True)
     live = FinishedSession(root, config, source=source, stop_after_steps=stopped_at_step)
     stored = store_recording(live.directory, root / "data")
     again = FinishedSession(root, session_config(config, stored), recording=stored, name="S02")
@@ -34,7 +34,7 @@ def live_and_again(tmp_path_factory, request):
 
 
 def test_the_last_block_of_the_recording_ends_where_the_session_was_stopped(live_and_again):
-    live, again, stored = live_and_again
+    live, _, stored = live_and_again
     assert live.result.reason == REASON_USER
     samples = len(np.loadtxt(stored / c.FILE_DATASET_EEG, delimiter=",", skiprows=1))
     protocol = read_yaml(stored / c.FILE_DATASET_PROTOCOL)["protocol"]
@@ -100,14 +100,15 @@ class TestStoreRecording:
 
     def live_session(self, tmp_path, seconds, stop_after_steps=None):
         matrix = synthetic_matrix(self.PROTOCOL)[:, : seconds * FS]
-        source = FakeSource(matrix, live=True)
+        source = StandInSource(matrix, live=True)
         config = config_with(self.PROTOCOL)
         return FinishedSession(tmp_path, config, source=source, stop_after_steps=stop_after_steps)
 
     def test_the_samples_of_the_electrodes_and_the_blocks_actually_recorded(self, tmp_path):
-        session = self.live_session(tmp_path, 13, stop_after_steps=15)  # [SPACE] in FOCUS
+        session = self.live_session(tmp_path, 13, stop_after_steps=15)  # stopped in FOCUS
         folder = store_recording(session.directory, tmp_path / "data")
-        assert folder == tmp_path / "data" / OWN_RECORDINGS / session.directory.name
+        assert folder == tmp_path / "data" / c.OWN_RECORDINGS / session.directory.name
+        assert folder is not None
         raw = np.loadtxt(session.directory / c.FILE_RAW, delimiter="\t", ndmin=2).T
         rows = session.source.electrode_rows
         assert electrodes_of_recording(folder / c.FILE_DATASET_EEG) == list(rows)

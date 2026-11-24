@@ -7,6 +7,9 @@ follows from another one is computed from it and never typed in a second time.
 
 from pathlib import Path
 
+PROGRAM_NAME = "AdaMus"  # as the API and the logs name it
+LINE_END = chr(10)  # between the lines of one message: of an error, of a log
+
 # --- Blocks of a session ------------------------------------------------------
 REST, FOCUS, FREE = "REST", "FOCUS", "FREE"
 BLOCK_MARKERS = {REST: 1, FOCUS: 2, FREE: 3}  # written into the EEG stream at a block start
@@ -88,22 +91,20 @@ FILE_AUDIO = "audio.wav"
 FILE_PD_LOG = "pd.log"
 FILE_LOG = "adamus.log"
 FILE_METRICS = "metrics.json"
-FILE_CONSOLE = "console.jsonl"  # what the console did for this session
+FILE_ACTIVITY = "activity.jsonl"  # what the program did around this session
 
 # --- Datasets: <DATASETS_DIR>/<dataset>/<recording>/ holds one recording ----------
 DATASETS_DIR = Path("data")
 FILE_DATASET_EEG = "eeg.csv"  # a line of electrode names, then one line per sample of them all
-FILE_DATASET_PROTOCOL = "protocol.yaml"  # the blocks the samples were recorded in
+FILE_DATASET_PROTOCOL = "protocol.yaml"  # the blocks the samples were recorded in; who, if known
+OWN_RECORDINGS = "own_recordings"  # the dataset of the sessions with the headset
+TEXT_ENCODING = (
+    "utf-8-sig"  # of a text file that a spreadsheet may have begun with a byte order mark
+)
 
 # --- What the metrics and the statistics report ---------------------------------
 PERCENTILE = 95  # the "high" value reported next to a median
 
-# --- The program --------------------------------------------------------------
-EXIT_OK = 0
-EXIT_ERROR = 1
-
-# --- States of a preflight check ----------------------------------------------
-CHECK_PENDING, CHECK_RUNNING, CHECK_PASSED = "pending", "running", "ok"
-CHECK_FAILED = "failed"  # a required check did not pass
-CHECK_NONE_FOUND = "unavailable"  # an optional check found nothing
-CHECK_SKIPPED = "skipped"  # a check it depends on did not pass
+# --- The processes the program starts, and the computer they talk on ------------
+LOCAL_HOST = "127.0.0.1"  # Pd and the server of the API listen here only: this computer
+STOP_WAIT_S = 5.0  # the longest Pd or the server may take to end when told to

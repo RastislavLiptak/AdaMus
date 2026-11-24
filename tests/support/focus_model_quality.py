@@ -1,9 +1,12 @@
 """How well the focus models do on people they had not seen, as the detector would meet them."""
 
+from typing import Any
+
 import numpy as np
 from scipy.stats import mannwhitneyu
 
 from adamus import constants as c
+from adamus import parallel
 from adamus.detection import focus_training as train
 from adamus.detection.focus_control import focus_of, next_level
 
@@ -12,7 +15,8 @@ CHECK_GROUPS = 7  # every group is scored by models of the others
 
 def auc(focus: np.ndarray, rest: np.ndarray) -> float:
     """Probability that a focus step scores above a rest step (ties count half)."""
-    return float(mannwhitneyu(focus, rest).statistic / (len(focus) * len(rest)))
+    test: Any = mannwhitneyu(focus, rest)  # the types scipy gives its results are incomplete
+    return float(test.statistic / (len(focus) * len(rest)))
 
 
 def controlled(values: np.ndarray, valid: np.ndarray) -> np.ndarray:
@@ -26,7 +30,7 @@ def controlled(values: np.ndarray, valid: np.ndarray) -> np.ndarray:
     return f
 
 
-def judged(person: dict, model: dict, threshold: float) -> dict[str, float]:
+def judged(person: dict[str, Any], model: dict[str, Any], threshold: float) -> dict[str, float]:
     """How a person in a set fares with a model and its threshold."""
     centred = train.centred(person["logs"], person["valid"], model["prior"])
     s = train.scores(model, centred) - threshold
@@ -43,15 +47,21 @@ def judged(person: dict, model: dict, threshold: float) -> dict[str, float]:
     }
 
 
-def check(people: list[dict]) -> dict[str, float]:
-    """Every group of people in a set scored by a model of the others, with a threshold of
-    the others; the means over the people."""
+def judged_group(group: int) -> list[dict[str, float]]:
+    """In a process of its own, with the people of a set in hand: every person of one group
+    scored by a model of the others, with a threshold of the others."""
+    people: list[dict[str, Any]] = parallel.shared()
     names = sorted(p["name"] for p in people)
-    rows = []
-    for group in range(CHECK_GROUPS):
-        held = set(names[group::CHECK_GROUPS])
-        others = [p for p in people if p["name"] not in held]
-        model, threshold = train.fit_people(others), train.threshold_of(others)
-        rows += [judged(p, model, threshold) for p in people if p["name"] in held]
+    held = set(names[group::CHECK_GROUPS])
+    others = [p for p in people if p["name"] not in held]
+    model, threshold = train.fit_people(others), train.threshold_of(others)
+    return [judged(p, model, threshold) for p in people if p["name"] in held]
+
+
+def check(people: list[dict[str, Any]]) -> dict[str, float]:
+    """Every group of people in a set scored by a model of the others, with a threshold of
+    the others, the groups side by side; the means over the people."""
+    groups = parallel.spread(judged_group, range(CHECK_GROUPS), train.FITTING_MEMORY, people)
+    rows = [row for group in groups for row in group]
     mean = {key: float(np.mean([r[key] for r in rows])) for key in rows[0]}
     return {**mean, "balanced": (mean["focus caught"] + mean["rest right"]) / 2}

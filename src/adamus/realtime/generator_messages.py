@@ -22,6 +22,7 @@ def path_atom(path: Path) -> str:
 
 
 REC_START = fudi("rec", "start")
+START_W_IDLE, START_W_FOCUS = 1.0, 0.0  # a session starts the music in its quiet form
 REC_STOP = fudi("rec", "stop")
 
 
@@ -40,7 +41,7 @@ def step_messages(config: Generator, w_idle: float, w_focus: float) -> list[str]
 def session_start_messages(config: Generator, audio_wav: Path) -> list[str]:
     return [
         fudi("reset"),
-        *step_messages(config, 1.0, 0.0),
+        *step_messages(config, START_W_IDLE, START_W_FOCUS),
         fudi("rec", "open", path_atom(audio_wav)),
         REC_START,
         fudi("bypass", 0),

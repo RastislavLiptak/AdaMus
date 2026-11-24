@@ -1,7 +1,7 @@
 """Mutation testing: does some test fail when the program is changed a little?
 
     python scripts/mutation_testing.py                        # the whole program
-    python scripts/mutation_testing.py src/adamus/config.py   # only the named files
+    python scripts/mutation_testing.py src/adamus/config.py   # only the named Python files
 
 A mutant is one small change of one source file: a comparison turned around,
 a number increased, a call left out. The tests that run the changed line are
@@ -25,6 +25,9 @@ How a run stays correct and quiet:
   module is imported may change anything, so the whole test suite is run
   against it, file after file: tests in another order would set up the
   fixtures of a file again and again.
+
+Not mutated: this tool and the install script (their tests run whole mutation runs and
+installations, minutes for one mutant), and the app (src/ui), which its own tests check.
 """
 
 import argparse
@@ -45,19 +48,23 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from adamus import parallel
+
 RUN_TESTS = "--run-tests"  # internal: this process runs pytest against one mutant
-# The slow tests are left out: one in real time per mutant would take too long, and the
-# training tests read the whole dataset in every worker at once, more than the memory holds.
-QUICK_TESTS = "not realtime and not training"
-PYTEST_OPTIONS = ["-q", "-x", "-m", QUICK_TESTS, "-p", "no:cacheprovider"]
-PYTEST_OPTIONS += ["-p", "no:faulthandler"]  # crashes are dealt with by run_tests_quietly
+PYTEST_OPTIONS = [
+    "-q", "-x", "-p", "no:cacheprovider",
+    "-p", "no:faulthandler",  # crashes are dealt with by run_tests_quietly
+    "--numprocesses=0",  # the mutants run side by side, their tests one by one
+]  # fmt: skip
 CRASH_SIGNALS = ("SIGSEGV", "SIGBUS", "SIGABRT", "SIGILL", "SIGFPE", "SIGTRAP")
 NO_TESTS_COLLECTED = 5  # exit code of pytest
 TEMPORARY = "temporary"  # the folder of the temporary files of the tests, in the work folder
 TIMES_FILE = "MUTATION_TEST_TIMES"  # the variable naming where a run writes how long each test took
 KILLED, SURVIVED, TIMEOUT, NOT_RUN = "killed", "survived", "timeout", "no test runs this line"
 TOO_LARGE = "too large"
-MEMORY_LIMIT = 2 * 1024**3  # bytes of memory a test process of one mutant may take
+# Bytes of memory a test process of one mutant may take: twice what all the tests take in one
+# process (measured: 0.52 GB at the most), so that only a mutant that grows is stopped.
+MEMORY_LIMIT = parallel.GIGABYTE
 TIME_MARGIN_S = 60  # a mutant may take twice as long as the tests, and this much more
 NOTES = {
     SURVIVED: "",
@@ -114,6 +121,8 @@ ADAMUS = Project(
     root=Path(__file__).resolve().parents[1],
     source=Path(__file__).resolve().parents[1] / "src",
     package="adamus",
+    # Not the tests in real time, of the app or over the training data: each mutant runs the
+    # tests in workers side by side, where one of those would take minutes, or gigabytes.
     tests=("tests/unit", "tests/integration", "tests/reference_values", "tests/project"),
 )
 
@@ -295,6 +304,11 @@ def _environment(source: Path, work: Path, **more: str) -> dict[str, str]:
     }  # fmt: skip
 
 
+def test_of(context: str) -> str:
+    """The test a context of coverage names, with the phase it was in: "tests/x.py::test_y|run"."""
+    return context.rsplit("|", 1)[0]
+
+
 def tests_of_each_line(
     project: Project, work: Path
 ) -> tuple[dict[Path, dict[int, set[str]]], dict[str, float], float]:
@@ -304,9 +318,12 @@ def tests_of_each_line(
 
     data_file, times_file = work / "coverage", work / "times.json"
     command = [
-        sys.executable, str(Path(__file__).resolve()), RUN_TESTS, "-q", "-m", QUICK_TESTS,
+        sys.executable, str(Path(__file__).resolve()), RUN_TESTS, "-q",
         "-p", "no:cacheprovider", f"--cov={project.package}", "--cov-context=test",
-        "--cov-report=", "--cov-fail-under=0", *project.tests,
+        "--cov-report=", "--cov-fail-under=0",
+        "-n", str(parallel.processes_here(MEMORY_LIMIT, alone=True)),
+        "--dist", "loadfile",  # side by side, file by file: the tests of a file in their order
+        *project.tests,
     ]  # fmt: skip
     started = time.monotonic()
     run = subprocess.run(
@@ -331,9 +348,9 @@ def tests_of_each_line(
         if project.source.resolve() in Path(measured).resolve().parents:
             file = Path(measured).resolve().relative_to(project.source.resolve())
             tests[file] = {
-                line: {context.rsplit("|", 1)[0] for context in contexts if context}
+                line: {test_of(context) for context in contexts if context}
                 for line, contexts in data.contexts_by_lineno(measured).items()
-            }  # a context is a test and the phase it was in: "tests/x.py::test_y|run"
+            }
     times = json.loads(times_file.read_text(encoding="utf-8"))
     _check_found(project, sorted(times), work)
     return tests, times, seconds
@@ -344,8 +361,9 @@ def _check_found(project: Project, tests: list[str], work: Path) -> None:
     that cannot be imported is not found either, so a mutant ends pytest the same way; that
     may count as caught only once every name is known to be right."""
     command = [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider"]
+    command += ["--numprocesses=0"]
     run = subprocess.run(
-        [*command, "-m", QUICK_TESTS, *tests],
+        [*command, *tests],
         cwd=project.root,
         env=_environment(project.source, work),
         capture_output=True,
@@ -424,7 +442,9 @@ def try_all(
     project: Project, mutants: list[Mutant], workers: int, work: Path
 ) -> list[tuple[Mutant, str]]:
     tests, times, seconds = tests_of_each_line(project, work)
-    limit = 2 * seconds + TIME_MARGIN_S  # a mutant may turn a loop into an endless one
+    # A mutant may turn a loop into an endless one. Its tests run in one process: they may
+    # take twice what all of them take one after another (not side by side, as measured).
+    limit = 2 * sum(times.values()) + TIME_MARGIN_S
     print(f"The tests take {seconds:.0f} s. Testing {len(mutants)} mutants ...", flush=True)
     copies: queue.Queue[Path] = queue.Queue()
     for number in range(workers):
@@ -479,7 +499,7 @@ def report(project: Project, results: list[tuple[Mutant, str]]) -> None:
     # A stopped mutant counts as caught, but a busy computer may have slowed down a test
     # that would have passed: it is listed too, to be looked at.
     listed = [(mutant, result) for mutant, result in results if result in NOTES]
-    shown_file = None
+    shown_file, lines = None, []
     for mutant, result in sorted(listed, key=lambda item: (item[0].file, item[0].lines[0])):
         if mutant.file != shown_file:
             shown_file = mutant.file
@@ -499,19 +519,13 @@ def run(project: Project, files: list[Path], workers: int) -> list[tuple[Mutant,
     return results
 
 
-def default_workers(processors: int, memory: int) -> int:
-    """As many workers as leave two processors free, and as fit, each at its MEMORY_LIMIT,
-    into half the memory of the computer: the person using it keeps the other half."""
-    return max(1, min(processors - 2, memory // (2 * MEMORY_LIMIT)))
-
-
 def main() -> int:
     if sys.argv[1:2] == [RUN_TESTS]:
         return run_tests_quietly(sys.argv[2:])
     parser = argparse.ArgumentParser(description="Mutation testing of AdaMus.")
     parser.add_argument("files", nargs="*", type=Path, help="source files (default: all)")
-    memory = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
-    parser.add_argument("--workers", type=int, default=default_workers(os.cpu_count() or 1, memory))
+    workers = parallel.processes_here(MEMORY_LIMIT, alone=True)  # all the computer has room for
+    parser.add_argument("--workers", type=int, default=workers)
     arguments = parser.parse_args()
     package = ADAMUS.source / ADAMUS.package
     files = [path.resolve() for path in arguments.files] or list(package.rglob("*.py"))

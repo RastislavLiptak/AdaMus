@@ -2,28 +2,32 @@
 # Installs the music generator inside this project: Pure Data, the Magenta
 # RealTime 2 model files and the mrt2~ external.
 #
-#   sh scripts/install_generator.sh [folder] [model]
+#   sh scripts/install_generator.sh <folder> <model>
 #
-# The program runs it itself when it starts and the generator is not there.
-# The defaults are the values of generator.folder and generator.model in
-# config.yaml. Run from the repository root with the virtual environment
-# active. Steps whose result already exists are skipped, so the script can be
-# re-run. The paths below the folder are the ones src/adamus/constants.py names.
+# The program runs it itself when it starts and the generator is not there,
+# with generator.folder and generator.model of config.yaml, and with the tools
+# of the project's Python (mrt) first on the PATH. Steps whose result already
+# exists are skipped, so the script can be run again. The paths below the
+# folder are the ones src/adamus/constants.py names.
 set -eu
 
-FOLDER="${1:-models/music_generator}"
-MODEL="${2:-mrt2_small}"
+FOLDER="$1"
+MODEL="$2"
 
+# What is downloaded is checked against what was downloaded when the versions were chosen:
+# a server that now sends something else is refused.
 PD_VERSION="0.57-0"
 PD_URL="https://msp.ucsd.edu/Software/pd-${PD_VERSION}.macos.zip"
+PD_SHA256="1025273983272911841e657b2e51f83c160e3b83bb476342a2e75ff62ce133a4"
 MRT_VERSION="v2.0.3"
+MRT_COMMIT="694a545e4ba0b88bf1150137b129582166d3e07f"
 MRT_URL="https://github.com/magenta/magenta-realtime.git"
 
 case "$FOLDER" in
     /*) ROOT="$FOLDER" ;;
     *) ROOT="$(pwd)/$FOLDER" ;;
 esac
-BUILD="$ROOT/.build"
+BUILD="$ROOT/.installing"  # removed at the end: not the .build of a project in the same folder
 mkdir -p "$ROOT"
 
 # What mrt2~ loads as its assets, below magenta-rt-v2/resources; the program checks the same.
@@ -40,6 +44,8 @@ if [ ! -x "$ROOT/Pd.app/Contents/Resources/bin/pd" ]; then
     echo "== Pure Data $PD_VERSION"
     mkdir -p "$BUILD"
     curl --fail --location --output "$BUILD/pd.zip" "$PD_URL"
+    echo "$PD_SHA256  $BUILD/pd.zip" | shasum -a 256 --check --status - \
+        || { echo "error: $PD_URL is not the Pure Data $PD_VERSION that was checked" >&2; exit 1; }
     unzip -q -o "$BUILD/pd.zip" -d "$BUILD"            # the archive holds a disk image
     hdiutil attach -quiet -nobrowse -readonly -mountpoint "$BUILD/pd-image" \
         "$BUILD/Pd-$PD_VERSION.dmg"
@@ -66,6 +72,8 @@ if [ ! -f "$ROOT/externals/mrt2~/mrt2~.pd_darwin" ]; then
     rm -rf "$BUILD/magenta-realtime"
     git clone --quiet --depth 1 --branch "$MRT_VERSION" --recurse-submodules \
         "$MRT_URL" "$BUILD/magenta-realtime"
+    [ "$(git -C "$BUILD/magenta-realtime" rev-parse HEAD)" = "$MRT_COMMIT" ] \
+        || { echo "error: $MRT_VERSION of $MRT_URL is not the commit that was checked" >&2; exit 1; }
     # A library the build fetches still asks for a CMake older than CMake 4 accepts.
     cmake -S "$BUILD/magenta-realtime" -B "$BUILD/magenta-realtime/build" \
         -DCMAKE_POLICY_VERSION_MINIMUM=3.5

@@ -15,7 +15,7 @@ from scipy.stats import mannwhitneyu, spearmanr
 
 from adamus import constants as c
 from adamus.errors import AdamusError
-from adamus.evaluation.session_folder import NOT_COMPLETE, SessionFolder, load_session_folder
+from adamus.evaluation.session_reader import NOT_COMPLETE, SessionFolder, load_session_folder
 from adamus.realtime.generator_messages import REC_START, REC_STOP
 
 Result = dict[str, Any]  # a part of metrics.json
@@ -32,7 +32,7 @@ MIN_SHARE_OF_STEPS = 0.8
 PERCENTILE_KEY = f"p{c.PERCENTILE}"  # how the high percentile is called in metrics.json
 
 
-def spread(values: list[float]) -> dict[str, float] | None:
+def summary_of(values: list[float]) -> dict[str, float] | None:
     """Median, high percentile and maximum; None for no data."""
     if not values:
         return None
@@ -79,7 +79,8 @@ def state_separation(session: SessionFolder) -> tuple[float | None, float | None
     focus, rest = f[c.FOCUS], f[c.REST]
     if not focus or not rest:
         return None, None
-    u = mannwhitneyu(focus, rest).statistic
+    test: Any = mannwhitneyu(focus, rest)  # the types scipy gives its results are incomplete
+    u = test.statistic
     return float(u / (len(focus) * len(rest))), float(np.mean(focus) - np.mean(rest))
 
 
@@ -111,13 +112,7 @@ def response_times(session: SessionFolder) -> dict[str, Any]:
 def step_regularity(session: SessionFolder) -> dict[str, float] | None:
     """Differences of t_sent between neighbouring sent steps."""
     sent = [tick["t_sent"] for tick in session.ticks if tick["t_sent"] is not None]
-    if len(sent) < 2:
-        return None
-    gaps = np.diff(sent)
-    return {
-        "median": float(np.median(gaps)),
-        PERCENTILE_KEY: float(np.percentile(gaps, c.PERCENTILE)),
-    }
+    return summary_of(np.diff(sent).tolist())
 
 
 def dropouts(silent: np.ndarray, rate: int) -> dict[str, Any]:
@@ -167,7 +162,8 @@ def best_lag(
         strength = (total[last[inside]] - total[first[inside]]) / (last - first)[inside]
         if np.ptp(f[inside]) == 0 or np.ptp(strength) == 0:
             continue
-        rho = float(spearmanr(f[inside], strength).statistic)
+        correlation: Any = spearmanr(f[inside], strength)  # as for the test above
+        rho = float(correlation.statistic)
         if best is None or rho > best["rho"]:
             best = {"rho": rho, "lag_s": lag}
     return best
@@ -289,11 +285,13 @@ def compute_metrics(directory: Path) -> Result:
         "sampling_rate_hz": sampling_rate(timestamps),
         "longest_sample_gap_s": longest_gap(timestamps),
         "valid_steps_per_block": valid_share(session),
-        "processing_time_s": spread([t["t_proc_end"] - t["t_proc_start"] for t in session.ticks]),
+        "processing_time_s": summary_of(
+            [t["t_proc_end"] - t["t_proc_start"] for t in session.ticks]
+        ),
         "state_separation_auc": auc,
         "mean_f_difference": f_difference,
         "response_time_s": response,
-        "control_latency_s": spread(session.control_latencies()),
+        "control_latency_s": summary_of(session.control_latencies()),
         "step_interval_s": step_regularity(session),
         **audio,
         # From a change of state to an audible change: response time plus the music lag.
@@ -306,9 +304,12 @@ def compute_metrics(directory: Path) -> Result:
 
 
 def analyze(directory: Path) -> Path:
-    """Compute all metrics of a session and write them to metrics.json."""
+    """Compute all metrics of a session and write them to metrics.json: whole, at once, as
+    the dashboard of the session may read it meanwhile."""
     path = Path(directory) / c.FILE_METRICS
     metrics = compute_metrics(directory)
-    with path.open("w", encoding="utf-8") as handle:
+    written = path.with_name(f".{path.name}.writing")
+    with written.open("w", encoding="utf-8") as handle:
         print(json.dumps(metrics, indent=2), file=handle)
+    written.replace(path)
     return path

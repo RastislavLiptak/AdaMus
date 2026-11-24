@@ -6,6 +6,7 @@ they were recorded under.
 """
 
 import itertools
+import re
 from pathlib import Path
 from typing import Any
 
@@ -15,25 +16,36 @@ from adamus import constants as c
 from adamus.config import Block, read_yaml, write_yaml
 from adamus.errors import AdamusError
 
+PARTIAL = ".partial"  # the end of the name of a recording being written
+
 SEPARATOR = ","  # between the values of a line of a recording
 SAMPLE_FORMAT = "%.3f"  # microvolts
-ENCODING = "utf-8-sig"  # a file saved by a spreadsheet may begin with a byte order mark
+DIGITS = re.compile(r"(\d+)")
+
+
+def in_name_order(folder: Path) -> tuple[list[str | int], str]:
+    """The order of names that Finder keeps: numbers in them by their value, so that S2 comes
+    before S10, and letters whatever their case; names equal so (S1, S01) by the name itself.
+    Splitting at the numbers leaves each number at an odd place."""
+    parts = DIGITS.split(folder.name)
+    key = [int(part) if place % 2 else part.lower() for place, part in enumerate(parts)]
+    return key, folder.name
 
 
 def datasets_in(root: Path) -> list[Path]:
-    """The datasets of the data folder that hold a recording, in alphabetical order."""
+    """The datasets of the data folder that hold a recording, in the order of their names."""
     folders = [folder for folder in Path(root).glob("*") if recordings_of(folder)]
-    return sorted(folders, key=lambda folder: folder.name)
+    return sorted(folders, key=in_name_order)
 
 
 def recordings_of(dataset: Path) -> list[Path]:
-    """The recordings of a dataset: its folders that hold both files, in alphabetical order."""
+    """The recordings of a dataset, the folders holding both files, in the order of their names."""
     folders = [
         folder
         for folder in Path(dataset).glob("*")
         if eeg_of(folder).is_file() and (folder / c.FILE_DATASET_PROTOCOL).is_file()
     ]
-    return sorted(folders, key=lambda folder: folder.name)
+    return sorted(folders, key=in_name_order)
 
 
 def eeg_of(recording: Path) -> Path:
@@ -44,7 +56,7 @@ def eeg_of(recording: Path) -> Path:
 def electrodes_of_recording(eeg_csv: Path) -> list[str]:
     """The names in the first line of a recording: one per column."""
     try:
-        with Path(eeg_csv).open(encoding=ENCODING) as lines:
+        with Path(eeg_csv).open(encoding=c.TEXT_ENCODING) as lines:
             names = [name.strip() for name in lines.readline().split(SEPARATOR)]
     except (OSError, ValueError) as problem:
         raise AdamusError(f"cannot read {eeg_csv}: {problem}") from problem
@@ -57,7 +69,7 @@ def read_recording(eeg_csv: Path) -> tuple[list[str], np.ndarray]:
     """The electrodes of a recording and its samples [electrodes x samples]."""
     names = electrodes_of_recording(eeg_csv)
     try:
-        with Path(eeg_csv).open(encoding=ENCODING) as lines:
+        with Path(eeg_csv).open(encoding=c.TEXT_ENCODING) as lines:
             lines.readline()  # the names
             first = lines.readline()
             if not first.strip():
@@ -76,17 +88,29 @@ def protocol_of(recording: Path) -> Any:
     return read_yaml(recording / c.FILE_DATASET_PROTOCOL).get("protocol")
 
 
+def person_of(recording: Path) -> str | None:
+    """Who was recorded, as the dataset of the recording names them (so the focus model names
+    the people it was trained on); None where its protocol.yaml does not say."""
+    person = read_yaml(recording / c.FILE_DATASET_PROTOCOL).get("person")
+    return person if isinstance(person, str) else None
+
+
 def write_recording(
     folder: Path, names: list[str], samples: np.ndarray, protocol: list[Block]
 ) -> Path:
     """A new recording: a line of the electrode names, then one line per sample of
-    ``samples`` [electrodes x n]; and the protocol of those samples."""
+    ``samples`` [electrodes x n]; and the protocol of those samples. Written into a hidden
+    folder first, and named when whole: one cut short is no recording."""
     folder = Path(folder)
-    folder.mkdir(parents=True)
+    if folder.exists():
+        raise FileExistsError(f"{folder} is a recording already")
+    being_written = folder.with_name(f".{folder.name}{PARTIAL}")
+    being_written.mkdir(parents=True)
     np.savetxt(
-        eeg_of(folder), samples.T, fmt=SAMPLE_FORMAT, delimiter=SEPARATOR,
+        eeg_of(being_written), samples.T, fmt=SAMPLE_FORMAT, delimiter=SEPARATOR,
         header=SEPARATOR.join(names), comments="",
     )  # fmt: skip
     blocks = [[block.label, block.duration_s] for block in protocol]
-    write_yaml({"protocol": blocks}, folder / c.FILE_DATASET_PROTOCOL)
+    write_yaml({"protocol": blocks}, being_written / c.FILE_DATASET_PROTOCOL)
+    being_written.rename(folder)
     return folder

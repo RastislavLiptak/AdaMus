@@ -7,10 +7,9 @@ import pytest
 
 from adamus import constants as c
 from adamus.datasets import datasets_in
-from adamus.own_recordings import OWN_RECORDINGS
 
 ROOT = Path(__file__).resolve().parents[2]
-CONFIG_FILE = ROOT / "config.yaml"
+CONFIG_FILE = ROOT / c.FILE_CONFIG
 DATASETS = ROOT / c.DATASETS_DIR
 PROJECT_MODEL = ROOT / c.FOCUS_MODEL_PATH  # trained by the program on its first start
 MISSING_MODEL = "the focus models are not trained yet: start adamus once, it trains them"
@@ -40,7 +39,7 @@ def require_reference_model(path: Path = PROJECT_MODEL) -> None:
 
 def shipped_datasets(root: Path = DATASETS) -> list[Path]:
     """The datasets that come with the project; the operator's own recordings are left out."""
-    return [dataset for dataset in datasets_in(root) if dataset.name != OWN_RECORDINGS]
+    return [dataset for dataset in datasets_in(root) if dataset.name != c.OWN_RECORDINGS]
 
 
 def what_the_program_keeps(root: Path = ROOT) -> list[tuple[str, int, int]]:

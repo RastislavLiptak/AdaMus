@@ -11,15 +11,16 @@ import numpy as np
 import pytest
 
 from adamus import constants as c
-from adamus.console.data_sources import (
+from adamus.datasets import electrodes_of_recording, person_of, protocol_of, recordings_of
+from adamus.detection.focus_training import LOG_FILE, TRAINING_DATA, blocks_of
+from adamus.evaluation import metrics
+from adamus.session_format import REASON_END_OF_STREAM
+from adamus.session_sources import (
     missing_electrodes,
     session_config,
 )
-from adamus.datasets import electrodes_of_recording, recordings_of
-from adamus.evaluation import metrics
-from adamus.session_files import REASON_END_OF_STREAM
 from tests.support.finished_sessions import CONTEXT, FS, FinishedSession, H, synthetic_signals
-from tests.support.project_paths import DATASETS, shipped_datasets
+from tests.support.project_paths import DATASETS, ROOT, shipped_datasets
 
 SYNTHETIC = DATASETS / "synthetic"
 N_BACK = DATASETS / "wearable_monitoring_n_back"
@@ -45,9 +46,29 @@ def test_the_n_back_recordings_are_the_people_the_models_were_trained_on():
     from adamus.detection.focus_detector import load_models
 
     people = load_models().raw["trained_on"]["people"]
-    assert sorted(r.name for r in recordings_of(N_BACK)) == sorted(
-        p.replace("/", "_") for p in people
-    )
+    assert sorted(str(person_of(r)) for r in recordings_of(N_BACK)) == sorted(people)
+    assert {person_of(r) for r in recordings_of(HEADBAND)} == {None}  # the model never saw them
+
+
+ORIGINAL = ROOT / c.FOCUS_DETECTOR_DIR / TRAINING_DATA
+
+
+@pytest.mark.skipif(not ORIGINAL.is_dir(), reason="the original dataset is not downloaded")
+def test_each_n_back_recording_is_the_person_it_names_to_the_millisecond_of_their_blocks():
+    """The task blocks of the protocol of each recording are those of its person in the original
+    dataset, and of no one else: the name of a person is known, not guessed from a folder."""
+    original = {
+        f"{person.parent.name}/{person.name}": [end - start for start, end in blocks_of(person)]
+        for person in ORIGINAL.glob("*/Experiment_*/*")
+        if (person / LOG_FILE).is_file()
+    }
+    for recording in recordings_of(N_BACK):
+        tasks = [seconds for label, seconds in protocol_of(recording) if label == c.FOCUS]
+        alike = [
+            name for name, blocks in original.items()
+            if len(blocks) >= len(tasks) and np.allclose(blocks[: len(tasks)], tasks, atol=2e-3)
+        ]  # fmt: skip
+        assert alike == [person_of(recording)], recording.name
 
 
 @pytest.mark.parametrize(

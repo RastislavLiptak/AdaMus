@@ -1,5 +1,9 @@
 """realtime.eeg_source: the headset as BrainFlow describes it, and the player of recordings."""
 
+# A failure of the headset is made in the BrainFlow board the source wraps, which nothing but
+# the source itself holds.
+# pyright: reportPrivateUsage=false
+
 import time
 
 import numpy as np
@@ -16,7 +20,7 @@ from adamus.realtime.eeg_source import (
     headset_is_available,
 )
 from tests.support.finished_sessions import FS, synthetic_signals
-from tests.support.stand_in_devices import FakeClock
+from tests.support.stand_in_devices import StandInClock
 from tests.support.synthetic_dataset import write_recording
 
 MUSE = Board("Muse 2", 38, "")
@@ -28,16 +32,19 @@ class TestHeadset:
         assert (source.board_id, source.fs) == (38, 256)
         assert source.electrode_rows == {"TP9": 1, "AF7": 2, "AF8": 3, "TP10": 4}
         assert (source.timestamp_row, source.marker_row) == (6, 7)
-        assert (source.is_playback, source.playback_file) == (False, None)
+        assert source.playback_file is None
 
     def test_another_board_has_its_own_rate_and_rows(self):
         cyton = HeadsetSource(Board("Cyton", 6, ""))
         assert (cyton.fs, cyton.timestamp_row, cyton.marker_row) == (1000, 30, 31)
 
-    def test_board_whose_electrodes_brainflow_does_not_name_has_none_to_choose_from(self):
+    def test_board_whose_electrodes_brainflow_does_not_name_has_them_named_by_their_place(self):
+        """None to choose for the detector, but every row is recorded and shown."""
         cyton = Board("Cyton", 6, "")
         assert electrodes_of_headset(cyton) == []
-        assert HeadsetSource(cyton).electrode_rows == {}
+        rows = HeadsetSource(cyton).electrode_rows
+        assert list(rows) == [f"EEG {place}" for place in range(1, len(rows) + 1)]
+        assert len(set(rows.values())) == len(rows) > 0
 
     def test_electrodes_of_a_headset_are_those_brainflow_names(self):
         assert electrodes_of_headset(MUSE) == ["TP9", "AF7", "AF8", "TP10"]
@@ -59,7 +66,7 @@ class TestHeadset:
         source.stop()
         source.close()
 
-    def test_probe_of_a_headset_opens_and_releases_it(self, monkeypatch):
+    def test_probe_of_a_headset_opens_and_releases_it(self, monkeypatch, capsys):
         calls = []
 
         class Shim:
@@ -76,6 +83,8 @@ class TestHeadset:
         monkeypatch.setattr(Shim, "disable_board_logger", staticmethod(lambda: None), False)
         assert headset_is_available(Board("Muse 2", 38, "Muse-ABCD")) is True
         assert calls == [("open", 38, "Muse-ABCD"), "prepare", "release"]
+        # said first, for the app to show should macOS end the program over Bluetooth
+        assert capsys.readouterr().err == "Looking for Muse 2 over Bluetooth.\n"
 
     def test_headset_that_cannot_be_reached_is_not_available(self, monkeypatch):
         class Unreachable:
@@ -93,10 +102,21 @@ class TestHeadset:
 SYNTHETIC_BOARD = Board("BrainFlow's synthetic board", -1, "")
 
 
-def test_brainflow_prints_nothing_into_the_console(capfd):
-    """Its own log would put lines such as "[board_logger] [info] ..." between the rows."""
+def test_brainflow_prints_nothing_of_its_own(capfd):
+    """Its own log ("[board_logger] [info] ...") would fill the last lines the app shows when
+    the program ends; only what the program says before Bluetooth is there."""
     assert headset_is_available(SYNTHETIC_BOARD) is True
-    assert capfd.readouterr().err == ""
+    assert capfd.readouterr().err == f"Looking for {SYNTHETIC_BOARD.name} over Bluetooth.\n"
+
+
+def test_opening_the_headset_is_said_first_as_it_goes_over_bluetooth(tmp_path, capfd):
+    source = HeadsetSource(SYNTHETIC_BOARD)
+    source.start(tmp_path / "raw.csv")
+    try:
+        assert capfd.readouterr().err == f"Opening {SYNTHETIC_BOARD.name} over Bluetooth.\n"
+    finally:
+        source.stop()
+        source.close()
 
 
 @pytest.fixture(scope="module")
@@ -141,7 +161,7 @@ class TestHeadsetStream:
     def test_brainflow_writes_what_was_delivered_to_the_raw_file(self, streamed):
         delivered = np.hstack(streamed["chunks"])
         written = DataFilter.read_file(str(streamed["raw"]))
-        assert written.shape == delivered.shape
+        assert written is not None and written.shape == delivered.shape
         assert np.allclose(written, delivered, atol=1e-4)
 
     def test_headset_that_does_not_answer_cannot_be_started(self, monkeypatch, tmp_path):
@@ -201,7 +221,7 @@ def recording(tmp_path_factory):
 def playing(recording, tmp_path):
     """The recording being played on a clock the test moves."""
     path, samples = recording
-    clock = FakeClock()
+    clock = StandInClock()
     source = RecordingSource(MUSE, path, clock)
     source.start(tmp_path / "raw.csv")
     yield source, clock, samples, tmp_path / "raw.csv"
@@ -212,7 +232,7 @@ class TestRecording:
     def test_description(self, playing, recording):
         source = playing[0]
         assert (source.board_id, source.fs) == (38, 256)  # played at the rate of the headset
-        assert (source.is_playback, source.playback_file) == (True, recording[0] / "eeg.csv")
+        assert source.playback_file == recording[0] / "eeg.csv"
 
     def test_every_column_is_an_electrode_followed_by_time_and_marker(self, playing):
         source = playing[0]
@@ -242,7 +262,7 @@ class TestRecording:
         assert times == pytest.approx(started + np.arange(256) / 256, abs=1e-5)
 
     def test_recording_ends_with_its_last_sample(self, playing):
-        source, clock, samples, _raw = playing
+        source, clock, _samples, _raw = playing
         clock.sleep(SECONDS + 10)
         assert source.read().shape == (7, SECONDS * FS)
         clock.sleep(10)
@@ -291,7 +311,7 @@ class TestRecording:
         source.close()
         delivered = np.hstack(delivered)
         written = DataFilter.read_file(str(raw))
-        assert written.shape == delivered.shape == (7, 384)
+        assert written is not None and written.shape == delivered.shape == (7, 384)
         assert np.allclose(written[:5], delivered[:5], atol=0.0005)
         assert np.allclose(written[5], delivered[5], atol=1e-6)
         assert np.array_equal(written[6], delivered[6])
@@ -304,7 +324,7 @@ class TestRecording:
     def test_recording_of_the_test_support_is_played_as_it_was_written(self, tmp_path):
         signals = synthetic_signals([["REST", SECONDS]])
         folder = write_recording(tmp_path / "in", signals, [("REST", SECONDS)])
-        clock = FakeClock()
+        clock = StandInClock()
         source = RecordingSource(MUSE, folder, clock)
         assert source.electrode_rows == {"AF7": 0, "AF8": 1, "TP9": 2, "TP10": 3}
         source.start(tmp_path / "raw.csv")
@@ -318,12 +338,12 @@ class TestRecordingsThatCannotBePlayed:
 
     def test_missing_file(self, tmp_path):
         with pytest.raises(AdamusError) as error:
-            RecordingSource(MUSE, tmp_path / "missing", FakeClock())
+            RecordingSource(MUSE, tmp_path / "missing", StandInClock())
         assert str(error.value).startswith(f"cannot read {tmp_path / 'missing' / 'eeg.csv'}: ")
 
     def test_lines_that_do_not_fit_the_names(self, tmp_path):
         path = tmp_path / "eeg.csv"
         path.write_text("AF7,AF8,TP9\n1,2\n3,4\n")
         with pytest.raises(AdamusError) as error:
-            RecordingSource(MUSE, tmp_path, FakeClock())
+            RecordingSource(MUSE, tmp_path, StandInClock())
         assert str(error.value) == f"{path}: every line must hold 3 values"

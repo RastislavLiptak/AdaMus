@@ -1,0 +1,437 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXContainerItemProxy section */
+		AD0000000000000000000033 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AD0000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AD0000000000000000000011;
+			remoteInfo = AdaMus;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		AD0000000000000000000021 /* AdaMus.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AdaMus.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AD0000000000000000000022 /* AdaMusTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AdaMusTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		AD0000000000000000000023 /* AdaMusUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AdaMusUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		AD0000000000000000000044 /* Exceptions for "AdaMus" folder in "AdaMusTests" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				AdaMusApp.swift,
+				Assets.xcassets,
+			);
+			target = AD0000000000000000000012 /* AdaMusTests */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		AD0000000000000000000041 /* AdaMus */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				AD0000000000000000000044 /* Exceptions for "AdaMus" folder in "AdaMusTests" target */,
+			);
+			path = AdaMus;
+			sourceTree = "<group>";
+		};
+		AD0000000000000000000042 /* AdaMusTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = AdaMusTests;
+			sourceTree = "<group>";
+		};
+		AD0000000000000000000043 /* AdaMusUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = AdaMusUITests;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		AD0000000000000000000051 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AD0000000000000000000052 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AD0000000000000000000053 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		AD0000000000000000000061 = {
+			isa = PBXGroup;
+			children = (
+				AD0000000000000000000041 /* AdaMus */,
+				AD0000000000000000000042 /* AdaMusTests */,
+				AD0000000000000000000043 /* AdaMusUITests */,
+				AD0000000000000000000062 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		AD0000000000000000000062 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				AD0000000000000000000021 /* AdaMus.app */,
+				AD0000000000000000000022 /* AdaMusTests.xctest */,
+				AD0000000000000000000023 /* AdaMusUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		AD0000000000000000000011 /* AdaMus */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AD0000000000000000000082 /* Build configuration list for PBXNativeTarget "AdaMus" */;
+			buildPhases = (
+				AD0000000000000000000071 /* Sources */,
+				AD0000000000000000000051 /* Frameworks */,
+				AD0000000000000000000073 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				AD0000000000000000000041 /* AdaMus */,
+			);
+			name = AdaMus;
+			productName = AdaMus;
+			productReference = AD0000000000000000000021 /* AdaMus.app */;
+			productType = "com.apple.product-type.application";
+		};
+		AD0000000000000000000012 /* AdaMusTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AD0000000000000000000083 /* Build configuration list for PBXNativeTarget "AdaMusTests" */;
+			buildPhases = (
+				AD0000000000000000000072 /* Sources */,
+				AD0000000000000000000052 /* Frameworks */,
+				AD0000000000000000000074 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				AD0000000000000000000041 /* AdaMus */,
+				AD0000000000000000000042 /* AdaMusTests */,
+			);
+			name = AdaMusTests;
+			productName = AdaMusTests;
+			productReference = AD0000000000000000000022 /* AdaMusTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		AD0000000000000000000013 /* AdaMusUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AD0000000000000000000084 /* Build configuration list for PBXNativeTarget "AdaMusUITests" */;
+			buildPhases = (
+				AD0000000000000000000075 /* Sources */,
+				AD0000000000000000000053 /* Frameworks */,
+				AD0000000000000000000076 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				AD0000000000000000000034 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				AD0000000000000000000043 /* AdaMusUITests */,
+			);
+			name = AdaMusUITests;
+			productName = AdaMusUITests;
+			productReference = AD0000000000000000000023 /* AdaMusUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		AD0000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2720;
+				LastUpgradeCheck = 2720;
+				TargetAttributes = {
+					AD0000000000000000000011 = {
+						CreatedOnToolsVersion = 27.2;
+					};
+					AD0000000000000000000012 = {
+						CreatedOnToolsVersion = 27.2;
+					};
+					AD0000000000000000000013 = {
+						CreatedOnToolsVersion = 27.2;
+						TestTargetID = AD0000000000000000000011;
+					};
+				};
+			};
+			buildConfigurationList = AD0000000000000000000081 /* Build configuration list for PBXProject "AdaMus" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = AD0000000000000000000061;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = AD0000000000000000000062 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				AD0000000000000000000011 /* AdaMus */,
+				AD0000000000000000000012 /* AdaMusTests */,
+				AD0000000000000000000013 /* AdaMusUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		AD0000000000000000000073 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AD0000000000000000000074 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AD0000000000000000000076 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		AD0000000000000000000071 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AD0000000000000000000072 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AD0000000000000000000075 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		AD0000000000000000000034 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AD0000000000000000000011 /* AdaMus */;
+			targetProxy = AD0000000000000000000033 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		AD0000000000000000000091 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		AD0000000000000000000092 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		AD0000000000000000000093 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = AdaMus;
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "AdaMus finds the Muse headset over Bluetooth and reads the EEG from it.";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = local.adamus.AdaMus;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Debug;
+		};
+		AD0000000000000000000094 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = AdaMus;
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "AdaMus finds the Muse headset over Bluetooth and reads the EEG from it.";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = local.adamus.AdaMus;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Release;
+		};
+		AD0000000000000000000095 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = local.adamus.AdaMusTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Debug;
+		};
+		AD0000000000000000000096 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = local.adamus.AdaMusTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Release;
+		};
+		AD0000000000000000000097 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = local.adamus.AdaMusUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				TEST_TARGET_NAME = AdaMus;
+			};
+			name = Debug;
+		};
+		AD0000000000000000000098 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = local.adamus.AdaMusUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				TEST_TARGET_NAME = AdaMus;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		AD0000000000000000000081 /* Build configuration list for PBXProject "AdaMus" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AD0000000000000000000091 /* Debug */,
+				AD0000000000000000000092 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AD0000000000000000000082 /* Build configuration list for PBXNativeTarget "AdaMus" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AD0000000000000000000093 /* Debug */,
+				AD0000000000000000000094 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AD0000000000000000000083 /* Build configuration list for PBXNativeTarget "AdaMusTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AD0000000000000000000095 /* Debug */,
+				AD0000000000000000000096 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AD0000000000000000000084 /* Build configuration list for PBXNativeTarget "AdaMusUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AD0000000000000000000097 /* Debug */,
+				AD0000000000000000000098 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = AD0000000000000000000001 /* Project object */;
+}

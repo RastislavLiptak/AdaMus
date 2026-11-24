@@ -1,6 +1,8 @@
 """Hand-made session folders, for tests of metrics and statistics on exact values."""
 
+import itertools
 import json
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 import numpy as np
@@ -8,6 +10,8 @@ from brainflow.board_shim import BoardShim
 
 from adamus import constants as c
 from adamus.config import write_yaml
+from adamus.evaluation.session_reader import load_session_folder
+from adamus.session_format import Tick
 from tests.support.finished_sessions import CONTEXT, FS, H, N
 from tests.support.stand_in_devices import MUSE_2
 
@@ -19,7 +23,10 @@ MAX_ABS_UV = 10.0  # of every electrode in every step
 RAW_START_S = 100.0  # the time of the first sample in raw.csv
 
 
-def tick(k, block=0, label="REST", full=True, valid=True, f=None, sent=True, score=0.0, t0=100.0):
+def tick(
+    k: int, block: int = 0, label: str = "REST", full: bool = True, valid: bool = True,
+    f: float | None = None, sent: bool = True, score: float = 0.0, t0: float = 100.0,
+) -> Tick:  # fmt: skip
     """One line of ticks.jsonl. Wall time = EEG time + 20 ms, processing 1 ms, sending 10 ms."""
     t = t0 + (CONTEXT + k * H) / FS
     was_sent = sent and valid and f is not None
@@ -27,7 +34,7 @@ def tick(k, block=0, label="REST", full=True, valid=True, f=None, sent=True, sco
         "k": k, "n_end": CONTEXT + k * H, "t_eeg": t - EEG_BEHIND_S, "t_proc_start": t,
         "t_proc_end": t + PROCESSING_S, "t_sent": t + SENDING_S if was_sent else None,
         "block_index": block, "block_label": label, "full_window": full,
-        "max_abs_uv": [MAX_ABS_UV] * ELECTRODES, "valid": valid,
+        "max_abs_uv": [MAX_ABS_UV for _ in range(ELECTRODES)], "valid": valid,
         "score": score if valid and f is not None else None, "f": f,
         "f_held": f is not None and not valid, "w_idle": 1.0 - (f or 0.0), "w_focus": f or 0.0,
     }  # fmt: skip
@@ -37,7 +44,11 @@ def event(kind, t, n=0, **fields):
     return {"t": t, "n": n, "type": kind, **fields}
 
 
-def protocol_ticks(protocol, f_of_block, steps=None, valid=lambda k: True):
+FOfStep = float | None | Callable[[int], float | None]  # f, none, or f of the step k
+FOfBlock = Mapping[int, FOfStep] | Sequence[FOfStep]  # by the place of the block
+
+
+def protocol_ticks(protocol, f_of_block: FOfBlock, steps=None, valid=lambda k: True):
     """Ticks of a protocol of [label, seconds]; ``f_of_block[i]`` is f, None or a function of k."""
     starts = np.cumsum([0] + [seconds * FS for _, seconds in protocol])
     total = steps if steps is not None else (int(starts[-1]) - CONTEXT) // H + 1
@@ -59,7 +70,7 @@ def write_session_folder(directory, raw_config, ticks, events, meta=None, sample
     directory.mkdir(parents=True, exist_ok=True)
     write_yaml(raw_config, directory / c.FILE_CONFIG)
     meta = {"fs": FS, "board_id": MUSE_2, "timestamp_row": BOARD["timestamp_channel"],
-            "marker_row": BOARD["marker_channel"], "mode": "live", "playback_path": None,
+            "marker_row": BOARD["marker_channel"], "playback_path": None,
             **(meta or {})}  # fmt: skip
     (directory / c.FILE_META).write_text(json.dumps(meta))
     write_lines(directory / c.FILE_TICKS, ticks)
@@ -90,3 +101,27 @@ def write_lines(path, rows):
     with Path(path).open("w", encoding="utf-8") as file:
         for row in rows:
             print(json.dumps(row), file=file)
+
+
+#: The protocol of the hand-made sessions of the metric tests, and no detection in any block.
+PROTOCOL = [["REST", 10], ["FOCUS", 10], ["REST", 10], ["FOCUS", 10], ["REST", 10]]
+NO_F = {0: None, 1: None, 2: None, 3: None, 4: None}
+
+
+def ticks_with(f_of_block, **options):
+    return protocol_ticks(PROTOCOL, f_of_block, **options)
+
+
+def session_builder(tmp_path, raw_config):
+    """What builds a finished session folder of PROTOCOL from ticks and events and loads it,
+    each build in a folder of its own."""
+    raw_config["protocol"] = PROTOCOL
+    built = itertools.count(1)
+
+    def build(ticks, events=(), **options):
+        directory = tmp_path / str(next(built)) / "20261110-150412_X"
+        return load_session_folder(
+            finished_session_folder(directory, raw_config, ticks, events, **options)
+        )
+
+    return build

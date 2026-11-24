@@ -5,6 +5,7 @@ import json
 import logging
 import platform
 import subprocess
+from collections.abc import Callable
 from importlib import metadata
 from pathlib import Path
 from typing import Any, BinaryIO, TextIO, Unpack
@@ -14,7 +15,14 @@ import numpy as np
 import adamus
 from adamus import constants as c
 from adamus.config import write_yaml
-from adamus.session_files import EventFields, Meta, SessionFacts, Tick, folder_name
+from adamus.session_format import (
+    EventFields,
+    Meta,
+    SessionFacts,
+    Tick,
+    folder_name,
+    log_time,
+)
 
 RECORDING_CLOSE_S = 2.0  # the longest wait for Pd to finish audio.wav after "rec stop"
 RECORDING_LOOK_S = 0.05  # between two looks at audio.wav meanwhile
@@ -60,6 +68,18 @@ def recording_finished(path: Path) -> bool:
     return whole and int.from_bytes(counted, "little") == size - RIFF_HEADER
 
 
+class LogFormat(logging.Formatter):
+    """A line of adamus.log: its time as the app reads it back, then the level,
+    the part of the program and the message."""
+
+    def __init__(self) -> None:
+        super().__init__("%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+    # The name and the arguments are those logging calls; a format of the date is not used.
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:  # noqa: N802, ARG002
+        return log_time(record.created)
+
+
 class SessionRecorder:
     """The files of one session folder that adamus itself writes.
 
@@ -86,7 +106,7 @@ class SessionRecorder:
         self._events = opened((self.directory / c.FILE_EVENTS).open("w", encoding="utf-8"))
         self._filtered = opened((self.directory / c.FILE_FILTERED).open("wb"))
         handler = logging.FileHandler(self.directory / c.FILE_LOG, encoding="utf-8")
-        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        handler.setFormatter(LogFormat())
         logger = logging.getLogger(adamus.__name__)
         self._open.callback(handler.close)
         self._open.callback(logger.setLevel, logger.level)
@@ -109,7 +129,6 @@ class SessionRecorder:
             "adamus_commit": _commit(),
             "python": platform.python_version(),
             "versions": {name: _version_of(name) for name in VERSIONED},
-            "files": {"raw": c.FILE_RAW, "audio": c.FILE_AUDIO, "pd_log": c.FILE_PD_LOG},
         }
         with (self.directory / c.FILE_META).open("w", encoding="utf-8") as handle:
             print(json.dumps(meta, indent=2, ensure_ascii=False), file=handle)
@@ -126,6 +145,14 @@ class SessionRecorder:
         with np.errstate(over="ignore"):  # a value too large for float32 is stored as inf
             record = np.ascontiguousarray(filtered, dtype=c.FILTERED_DTYPE)
         record.tofile(self._filtered)  # unbuffered
+
+    def wait_for_recording(self, sleep: Callable[[float], None]) -> bool:
+        """Wait until Pd has finished audio.wav, at most RECORDING_CLOSE_S; whether it did."""
+        for _ in range(round(RECORDING_CLOSE_S / RECORDING_LOOK_S)):
+            if recording_finished(self.audio_wav):
+                return True
+            sleep(RECORDING_LOOK_S)
+        return False
 
     def close(self) -> None:
         """Close what ``open`` opened; nothing when it was never called."""

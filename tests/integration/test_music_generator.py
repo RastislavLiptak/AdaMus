@@ -1,6 +1,6 @@
 """realtime.music_generator.MusicGenerator against a stand-in for the pd binary.
 
-The stand-in (tests/support/fake_pure_data.py) speaks the same protocol and reports
+The stand-in (tests/support/stand_in_pure_data.py) speaks the same protocol and reports
 like mrt2~, so everything but Pure Data itself is the real code.
 """
 
@@ -11,6 +11,7 @@ import socket
 import tempfile
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 import soundfile
@@ -25,37 +26,53 @@ from adamus.realtime.generator_messages import (
     step_messages,
 )
 from adamus.realtime.music_generator import MusicGenerator
+from adamus.session_format import read_log_line
 from tests.support.finished_sessions import config_with
 from tests.support.waiting import wait_until
 
+MILLISECOND_S = 0.001  # the times of a log are cut to it
 
-@pytest.fixture
-def make_generator(fake_generator, tmp_path):
-    """Build generators on the fake installation; every one is stopped after the test."""
 
-    def build(generator=None, timeouts=None):
+class Generators:
+    """Builds generators on the stand-in installation, and keeps how far their starts got, as they
+    reported it."""
+
+    def __init__(self, stand_in_generator, tmp_path):
+        self._stand_in_generator = stand_in_generator
+        self.made: list[MusicGenerator] = []
+        self.reported: list[dict[str, Any]] = []
+        self.printed = tmp_path / "printed_outside_sessions.log"
+
+    def __call__(self, generator=None, timeouts=None):
         config = config_with(
-            generator={**fake_generator, **(generator or {})},
+            generator={**self._stand_in_generator, **(generator or {})},
             timeouts={"pd_connect_s": 10, "model_load_s": 10, **(timeouts or {})},
         )
-        instance = MusicGenerator(config.generator, config.timeouts, report)
-        instance.config = config.generator
-        build.made.append(instance)
-        return instance
+        made = MusicGenerator(config.generator, config.timeouts, self._report)
+        self.made.append(made)
+        return made
 
-    def report(kind, /, **fields):
-        build.reported.append({"t": time.time(), "type": kind, **fields})
+    def _report(self, kind, /, **fields):
+        self.reported.append({"t": time.time(), "type": kind, **fields})
 
-    build.made = []
-    build.reported = []  # how far the starts got, as the generators reported it
-    build.printed = tmp_path / "printed_outside_sessions.log"
-    yield build
-    for instance in build.made:
-        instance.stop()
+
+@pytest.fixture
+def make_generator(stand_in_generator, tmp_path):
+    """Build generators on the stand-in installation; every one is stopped after the test."""
+    generators = Generators(stand_in_generator, tmp_path)
+    yield generators
+    for made in generators.made:
+        made.stop()
 
 
 def reported(make_generator):
     return make_generator.reported
+
+
+def said(log_text):
+    """What the lines of a pd.log say, without the times they begin with."""
+    read = [read_log_line(line) for line in log_text.splitlines()]
+    return "".join(said + "\n" for _, said in filter(None, read))
 
 
 def pd_log(make_generator):
@@ -63,7 +80,7 @@ def pd_log(make_generator):
     generator = make_generator.made[-1]
     generator.copy_stderr_to(make_generator.printed)
     generator.copy_stderr_to(None)
-    return make_generator.printed.read_text()
+    return said(make_generator.printed.read_text())
 
 
 def wait_for(condition, seconds=5):
@@ -71,11 +88,11 @@ def wait_for(condition, seconds=5):
 
 
 class TestStart:
-    def test_command_line_of_pd(self, make_generator, fake_generator):
+    def test_command_line_of_pd(self, make_generator, stand_in_generator):
         generator = make_generator()
         assert generator.command == []
         generator.start()
-        folder = fake_generator["folder"]
+        folder = stand_in_generator["folder"]
         patch = generator.command[-1]
         assert generator.command == [
             f"{folder}/Pd.app/Contents/Resources/bin/pd",
@@ -95,18 +112,21 @@ class TestStart:
         assert not patch.exists()
 
     def test_patch_of_a_start_that_failed_is_gone_too(self, make_generator, monkeypatch):
-        monkeypatch.setenv("FAKE_PD_DIES_ON_MODEL", "1")
+        monkeypatch.setenv("STAND_IN_PD_DIES_ON_MODEL", "1")
         generator = make_generator()
         with pytest.raises(AdamusError):
             generator.start()
         assert not Path(generator.command[-1]).exists()
 
-    def test_patch_pd_runs_listens_on_the_configured_port(self, make_generator, fake_generator):
+    def test_patch_pd_runs_listens_on_a_port_the_system_found_free(self, make_generator):
+        """A port fixed in advance may be used by another program (3000 by many servers)."""
         generator = make_generator()
         generator.start()
         patch = Path(generator.command[-1]).read_text()
-        assert f"#X obj 30 20 netreceive {fake_generator['port']};" in patch
-        assert "{port}" not in patch
+        assert generator.port > 0
+        listens = f"#X msg 290 180 listen {generator.port} {c.LOCAL_HOST};"  # this computer only
+        assert listens in patch
+        assert "{port}" not in patch and "{host}" not in patch
         assert patch.count("\n") == music_generator.PATCH_TEMPLATE.read_text().count("\n")
 
     def test_start_loads_assets_then_model_and_logs_its_progress(self, make_generator, tmp_path):
@@ -139,17 +159,30 @@ class TestStart:
         generator = make_generator()
         assert generator.pd_version is None
         generator.start()
-        assert generator.pd_version == "Pd-0.57-0 (fake)"
+        assert generator.pd_version == "Pd-0.57-0 (stand-in)"
 
     def test_a_pd_that_cannot_tell_its_version_still_runs(self, make_generator, monkeypatch):
         """The version only goes into meta.json; it is no reason to give up a working Pd."""
-        monkeypatch.setenv("FAKE_PD_NO_VERSION", "1")
+        monkeypatch.setenv("STAND_IN_PD_NO_VERSION", "1")
         generator = make_generator()
         generator.start()
         assert generator.running and generator.pd_version is None
 
+    def test_the_generator_is_silent_before_it_has_a_model(self, make_generator, monkeypatch):
+        """mrt2~ plays as soon as it has a model: measured with Pd and its output written to
+        a file, it played for as long as ``bypass 1`` came after the model, and not at all when
+        it came before."""
+        generator = make_generator()
+        sent = []
+        send = generator.send
+        monkeypatch.setattr(generator, "send", lambda text: (sent.append(text), send(text)))
+        generator.start()
+        heads = [message.split()[0] for message in sent]
+        assert heads.index("bypass") < heads.index("model")
+        assert sent[heads.index("bypass")] == fudi("bypass", 1)
+
     def test_generator_sleeps_after_start(self, make_generator, tmp_path):
-        """``bypass 1`` is the last message of the start: no audio until a session begins."""
+        """No audio until a session begins."""
         generator = make_generator()
         generator.start()
         folder = tmp_path / "S"
@@ -187,8 +220,8 @@ class TestStart:
 
     def test_model_loaded_before_it_was_asked_for_does_not_count(self, make_generator, monkeypatch):
         """mrt2~ loads its default model on creation, if one is installed."""
-        monkeypatch.setenv("FAKE_PD_DEFAULT_MODEL", "1")
-        monkeypatch.setenv("FAKE_PD_SILENT_MODEL", "1")  # the requested model never loads
+        monkeypatch.setenv("STAND_IN_PD_DEFAULT_MODEL", "1")
+        monkeypatch.setenv("STAND_IN_PD_SILENT_MODEL", "1")  # the requested model never loads
         generator = make_generator(timeouts={"model_load_s": 1.5})
         started = time.monotonic()
         with pytest.raises(AdamusError, match="mrt2~ did not load the model within 1.5 s"):
@@ -197,8 +230,8 @@ class TestStart:
 
     def test_assets_and_model_share_one_time_limit(self, make_generator, monkeypatch):
         """Counted from the connection to Pd, however long Pd took to start."""
-        monkeypatch.setenv("FAKE_PD_ASSETS_S", "1.0")
-        monkeypatch.setenv("FAKE_PD_SILENT_MODEL", "1")
+        monkeypatch.setenv("STAND_IN_PD_ASSETS_S", "1.0")
+        monkeypatch.setenv("STAND_IN_PD_SILENT_MODEL", "1")
         generator = make_generator(timeouts={"model_load_s": 1.5})
         gave_up, stop = [], generator.stop
 
@@ -215,7 +248,7 @@ class TestStart:
         assert 1.4 <= given_up - connected < 2.0  # not 1.0 s + 1.5 s
 
     def test_assets_that_take_too_long(self, make_generator, monkeypatch):
-        monkeypatch.setenv("FAKE_PD_ASSETS_S", "3")
+        monkeypatch.setenv("STAND_IN_PD_ASSETS_S", "3")
         generator = make_generator(timeouts={"model_load_s": 0.5})
         with pytest.raises(AdamusError) as error:
             generator.start()
@@ -223,7 +256,7 @@ class TestStart:
         assert not generator.running
 
     def test_pd_that_dies_while_it_loads_the_model(self, make_generator, monkeypatch):
-        monkeypatch.setenv("FAKE_PD_DIES_ON_MODEL", "1")
+        monkeypatch.setenv("STAND_IN_PD_DIES_ON_MODEL", "1")
         generator = make_generator()
         started = time.monotonic()
         with pytest.raises(AdamusError) as error:
@@ -245,7 +278,7 @@ class TestStart:
         assert str(error.value).splitlines() == [cause, heading, *printed]
 
     def test_ctrl_c_while_pd_is_starting_leaves_no_pd_behind(self, make_generator, monkeypatch):
-        monkeypatch.setenv("FAKE_PD_SILENT_MODEL", "1")  # the start waits for the model
+        monkeypatch.setenv("STAND_IN_PD_SILENT_MODEL", "1")  # the start waits for the model
 
         def interrupted(seconds):
             monkeypatch.undo()  # once; stopping Pd sleeps too
@@ -271,38 +304,31 @@ class TestStart:
     def test_requested_model_is_awaited_after_a_default_one(
         self, make_generator, monkeypatch, tmp_path
     ):
-        monkeypatch.setenv("FAKE_PD_DEFAULT_MODEL", "1")
+        monkeypatch.setenv("STAND_IN_PD_DEFAULT_MODEL", "1")
         make_generator().start()
         assert pd_log(make_generator).count("mrt2~: model loaded.") == 2
         assert reported(make_generator)[-1]["type"] == "MODEL_LOADED"
 
     def test_pd_that_does_not_listen(self, make_generator, monkeypatch):
-        monkeypatch.setenv("FAKE_PD_NO_LISTEN", "1")
+        monkeypatch.setenv("STAND_IN_PD_NO_LISTEN", "1")
         generator = make_generator(timeouts={"pd_connect_s": 1.5})
         started = time.monotonic()
         with pytest.raises(AdamusError) as error:
             generator.start()
-        port = generator.config.port
+        port = generator.port
         assert error.value.args[0] == f"cannot connect to Pd on port {port} within 1.5 s"
         assert 1.4 <= time.monotonic() - started < 5
         assert not generator.running
 
-    def test_port_held_by_another_program_is_reported_before_pd_is_started(
-        self, make_generator, fake_generator, tmp_path
-    ):
-        """The messages would go to the other program, and Pd would wait for them in vain."""
+    def test_a_port_another_program_listens_on_is_not_chosen(self, make_generator):
         with socket.socket() as other_program:
-            other_program.bind((music_generator.PD_HOST, fake_generator["port"]))
+            other_program.bind((c.LOCAL_HOST, 0))
             other_program.listen()
+            taken = other_program.getsockname()[1]
+            assert music_generator.free_port() != taken
             generator = make_generator()
-            with pytest.raises(AdamusError) as error:
-                generator.start()
-        assert str(error.value) == (
-            f"port {fake_generator['port']} (generator.port) is used by another program; "
-            "an AdaMus or a Pure Data may still be running"
-        )
-        assert reported(make_generator) == []  # Pd was not started
-        assert not generator.running
+            generator.start()
+            assert generator.port != taken
 
     def test_missing_pd_binary(self, make_generator):
         generator = make_generator(generator={"folder": "nowhere"})
@@ -316,7 +342,7 @@ class TestStart:
     def test_what_pd_prints_stays_off_the_screen_and_odd_bytes_do_not_stop_it(
         self, make_generator, monkeypatch, tmp_path, capfd
     ):
-        monkeypatch.setenv("FAKE_PD_CHATTY", "1")
+        monkeypatch.setenv("STAND_IN_PD_CHATTY", "1")
         generator = make_generator()
         generator.start()
         generator.stop()
@@ -387,6 +413,24 @@ class TestSession:
         audio, _ = soundfile.read(tmp_path / "S01" / c.FILE_AUDIO)
         assert audio.any()
 
+    def test_every_line_of_the_session_log_begins_with_the_moment_pd_printed_it(
+        self, make_generator, tmp_path
+    ):
+        """Also what Pd printed before the session took it: the timeline shows it then."""
+        before = time.time()
+        generator = make_generator()
+        generator.start()
+        time.sleep(0.3)
+        taken = time.time()
+        self.record(generator, tmp_path / "A")
+        after = time.time()
+        lines = (tmp_path / "A" / c.FILE_PD_LOG).read_text().splitlines()
+        moments = [moment for moment, _ in filter(None, map(read_log_line, lines))]
+        assert len(moments) == len(lines)
+        assert moments == sorted(moments)
+        assert before - MILLISECOND_S <= moments[0] < taken  # while Pd started
+        assert moments[-1] <= after
+
     def test_session_log_holds_what_pd_printed_since_the_session_before(
         self, make_generator, tmp_path
     ):
@@ -424,19 +468,19 @@ class TestStop:
         with pytest.raises(ProcessLookupError):
             os.kill(pid, 0)
         assert pd_log(make_generator).splitlines()[-1] in (
-            "fake pd: quit, the connection closed",
-            "fake pd: ended by SIGTERM",
+            "stand-in pd: quit, the connection closed",
+            "stand-in pd: ended by SIGTERM",
         )
 
     def test_what_pd_prints_while_it_quits_is_all_kept(self, make_generator, monkeypatch, tmp_path):
         """Many lines, so that they are still being copied when Pd has ended."""
-        monkeypatch.setenv("FAKE_PD_LAST_WORDS", "3000")
+        monkeypatch.setenv("STAND_IN_PD_LAST_WORDS", "3000")
         generator = make_generator()
         generator.start()
         generator.copy_stderr_to(tmp_path / "pd.log")
         generator.stop()
-        last = (tmp_path / "pd.log").read_text().splitlines()[-1]
-        assert last in ("fake pd: quit, the connection closed", "fake pd: ended by SIGTERM")
+        last = said((tmp_path / "pd.log").read_text()).splitlines()[-1]
+        assert last in ("stand-in pd: quit, the connection closed", "stand-in pd: ended by SIGTERM")
 
     def test_a_patch_removed_by_someone_else_does_not_keep_pd_running(self, make_generator):
         """The system may clear its folder of temporary files while a long run goes on."""
@@ -449,17 +493,17 @@ class TestStop:
     def test_stop_ends_a_pd_that_was_never_connected_with_sigterm(
         self, make_generator, tmp_path, monkeypatch
     ):
-        monkeypatch.setenv("FAKE_PD_NO_LISTEN", "1")
+        monkeypatch.setenv("STAND_IN_PD_NO_LISTEN", "1")
         generator = make_generator(timeouts={"pd_connect_s": 0.5})
         with pytest.raises(AdamusError, match="^cannot connect to Pd"):
             generator.start()  # ends with stop()
         with pytest.raises(ProcessLookupError):
             os.kill(reported(make_generator)[0]["pid"], 0)
-        assert pd_log(make_generator).splitlines()[-1] == "fake pd: ended by SIGTERM"
+        assert pd_log(make_generator).splitlines()[-1] == "stand-in pd: ended by SIGTERM"
 
     def test_pd_that_hangs_is_killed(self, make_generator, tmp_path, monkeypatch):
-        monkeypatch.setenv("FAKE_PD_HANGS", "1")
-        monkeypatch.setattr(music_generator, "STOP_S", 0.5)
+        monkeypatch.setenv("STAND_IN_PD_HANGS", "1")
+        monkeypatch.setattr(c, "STOP_WAIT_S", 0.5)
         generator = make_generator()
         generator.start()
         pid = reported(make_generator)[0]["pid"]
@@ -468,7 +512,7 @@ class TestStop:
         assert time.monotonic() - started >= 0.5  # it was given its time to end
         with pytest.raises(ProcessLookupError):
             os.kill(pid, 0)
-        assert pd_log(make_generator).splitlines()[-1] == "fake pd: ignoring SIGTERM"
+        assert pd_log(make_generator).splitlines()[-1] == "stand-in pd: ignoring SIGTERM"
 
     def test_pd_that_died_is_noticed_when_a_message_is_sent(self, make_generator, tmp_path):
         generator = make_generator()
@@ -486,7 +530,7 @@ class TestStop:
         generator.start()
         generator._socket.close()
         wait_for(lambda: not generator.running)
-        assert pd_log(make_generator).splitlines()[-1] == "fake pd: quit, the connection closed"
+        assert pd_log(make_generator).splitlines()[-1] == "stand-in pd: quit, the connection closed"
 
     def test_stop_may_be_called_before_start_and_twice(self, make_generator):
         generator = make_generator()
