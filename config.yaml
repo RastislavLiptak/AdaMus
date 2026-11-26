@@ -17,10 +17,82 @@ protocol:
 generator:
   folder: models/music_generator  # the program installs the generator here
   model: mrt2_small
-  # One piece of music in two forms. While focus is off a piano plays alone; as focus
-  # comes on, the orchestra joins it.
-  prompt_idle: quiet slow solo piano
-  prompt_focus: fast loud piano concerto with full symphony orchestra brass and timpani
+  style_guidance: 5     # how closely the music follows its style text
+  note_guidance: 5      # how closely it follows the chords
+# The music a session can play, chosen when it starts: each one piece in two forms, the
+# quiet one at rest and the full one in focus. Under both runs the same loop of chords,
+# one chord a bar; in focus the generator may add drums and play louder.
+styles:
+  - id: folk
+    name: Folk
+    about: One acoustic guitar, picked softly at rest and strummed firmly in focus.
+    rest: instrumental folk with soft acoustic guitar picking
+    focus: instrumental folk with firm strummed acoustic guitar
+    tempo_bpm: 100
+    chords: [C, F, C, G]
+    chord_gap_s: 0.06               # between letting a chord go and striking the next
+    focus_power_chords: false       # in focus only root, fifth and octave, as a rock guitar
+    focus_drums: false              # whether drums may come in focus; at rest they never do
+    rest_volume_db: -3              # headroom: the generator's loudest moments reach full scale
+    focus_volume_db: -2
+    temperature: 0.95
+    top_k: 100
+  - id: rock
+    name: Rock
+    about: A clean electric guitar at rest; distorted power chords and bass in focus.
+    rest: instrumental soft clean electric guitar arpeggios
+    focus: instrumental rock with distorted electric guitar power chords and bass
+    tempo_bpm: 110
+    chords: [C, G, Am, F]
+    chord_gap_s: 0                  # a gap would cut the distorted guitar at every chord
+    focus_power_chords: true
+    focus_drums: false
+    rest_volume_db: -4              # room for the louder focus without clipping
+    focus_volume_db: 2
+    temperature: 0.9
+    top_k: 40
+  - id: country
+    name: Country
+    about: An acoustic guitar picked softly at rest; the whole band joins in focus.
+    rest: instrumental country with soft acoustic guitar picking
+    focus: instrumental country band with acoustic guitar banjo bass and drums
+    tempo_bpm: 112
+    chords: [C, F, C, G]
+    chord_gap_s: 0.06
+    focus_power_chords: false
+    focus_drums: true
+    rest_volume_db: -3
+    focus_volume_db: 0
+    temperature: 1
+    top_k: 100
+  - id: koto
+    name: Koto and Taiko
+    about: Koto and shakuhachi at rest; a Japanese ensemble with taiko drums in focus.
+    rest: instrumental soft koto and shakuhachi
+    focus: instrumental energetic japanese ensemble with koto shakuhachi shamisen and loud taiko drums
+    tempo_bpm: 100
+    chords: [C5, F5, G5, C5]        # open fifths, which leave the scale to the koto
+    chord_gap_s: 0.06
+    focus_power_chords: false
+    focus_drums: true
+    rest_volume_db: -3
+    focus_volume_db: 0
+    temperature: 1
+    top_k: 100
+  - id: oud
+    name: Oud and Darbuka
+    about: A lone oud at rest; an ensemble with darbuka and frame drums in focus.
+    rest: instrumental soft oud melody
+    focus: instrumental energetic oud ensemble with loud darbuka and frame drums
+    tempo_bpm: 100
+    chords: [A5]                    # a drone
+    chord_gap_s: 0.06
+    focus_power_chords: false
+    focus_drums: true
+    rest_volume_db: -3
+    focus_volume_db: 0
+    temperature: 1
+    top_k: 100
 timeouts:
   stream_s: 5
   pd_connect_s: 30

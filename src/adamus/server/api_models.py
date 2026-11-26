@@ -213,6 +213,28 @@ class Highlight(BaseModel):
     colour: Colour  # of the kind of result, as the timeline draws it
 
 
+class MusicPart(BaseModel):
+    """One of the two forms of a style's music, as its sample plays it."""
+
+    title: str
+    prompt: str  # what the generator was told to play
+    sound: str  # how loud, and with what
+    colour: Colour  # of the state it is played in, as the timeline draws it
+    from_s: float  # where it begins in the sample
+
+
+class Music(BaseModel):
+    """The style a session played, for its overview: its forms as its sample plays them, how
+    loud the sample is along it, and its other settings. The sample and the cover come from the
+    session's own addresses."""
+
+    title: str
+    parts: list[MusicPart]
+    loudness: list[float]  # of equal slices of the sample, the loudest 1
+    length_s: float  # of the sample
+    facts: list[Fact]
+
+
 class Dashboard(BaseModel):
     """The dashboard: its overview first, what the session is (``summary``), what went wrong
     (``failures``), anything that bears on how its results are read (``caution``) and its main
@@ -225,6 +247,7 @@ class Dashboard(BaseModel):
     failures: list[str]  # what went wrong, each on its own
     caution: str | None
     highlights: list[Highlight]
+    music: Music | None  # none of a session from before styles
     sections: list[Section]
 
 
@@ -238,11 +261,19 @@ class SourceChoice(BaseModel):
     recordings: list[str]  # one is chosen from them; none to choose from for a live source
 
 
+class StyleChoice(BaseModel):
+    """A style of music a session can play. A sample of it comes from the style's own address."""
+
+    id: str
+    title: str  # as the form shows it
+
+
 class NewSessionForm(BaseModel):
     """What the form for a new session offers, and the rule its name must keep."""
 
     sources: list[SourceChoice]
     sources_hint: str  # what to tell the operator when there is none
+    styles: list[StyleChoice]  # in the order of the configuration; the first is chosen at first
     name_pattern: str  # a regular expression the whole name must match
     name_hint: str  # what to tell the operator when it does not
 
@@ -268,6 +299,7 @@ class AudioOutputs(BaseModel):
 class SessionRequest(BaseModel):
     source_id: str
     recording: str | None = None  # of a dataset; none of the headset
+    style_id: str  # the music it plays
     name: str
     output: str  # the id of the audio output the music is to play on
 

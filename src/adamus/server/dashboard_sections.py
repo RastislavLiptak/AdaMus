@@ -67,6 +67,8 @@ SETTING_LABELS = {
     "board.serial_number": "Headset Serial Number",
     "generator.folder": "Generator Folder",
     "generator.model": "Music Model",
+    "generator.style_guidance": "Style Guidance",
+    "generator.note_guidance": "Note Guidance",
     "generator.prompt_idle": "Music at Rest",
     "generator.prompt_focus": "Music in Focus",
     "timeouts.stream_s": "Stream Timeout",
@@ -76,7 +78,7 @@ SETTING_LABELS = {
 }
 SERIAL_NUMBER = "board.serial_number"
 SECONDS = "_s"  # the ending of a setting given in seconds
-SHOWN_ELSEWHERE = {"protocol"}  # in the section of the blocks
+SHOWN_ELSEWHERE = {"protocol", "styles"}  # in the sections of the blocks and of the music style
 RELEASE = r"\d+(\.\d+)+"  # the numbers of a release, as 0.57.0
 Item = Fact | Table
 

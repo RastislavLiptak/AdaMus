@@ -4,7 +4,9 @@
 // program's own rule as it is typed. Opened, the form has the program look for the headset,
 // which takes seconds: meanwhile the datasets are offered, and a session from one can start.
 // The music plays on the audio output chosen, at first the one the system plays on; the program
-// moves it there when the session starts.
+// moves it there when the session starts. Its style is at first the first the program offers; a
+// style chosen plays a sample of itself, as does the button beside it, on the output the system
+// plays on, until the sample ends, is stopped, the session starts or the form closes.
 import Foundation
 import Observation
 
@@ -19,6 +21,9 @@ final class NewSessionModel {
     }
     /// The recording the operator chose; until then, the first of the source.
     var chosenRecording: String?
+    /// The style of music the operator chose; until then, the first offered.
+    private(set) var chosenStyle: StyleChoice.ID?
+    private let sample = SamplePlayer()
     var name = ""
     private(set) var check: SourceCheck?
     private(set) var outputs: AudioOutputs?
@@ -38,6 +43,11 @@ final class NewSessionModel {
     var source: SourceChoice? {
         guard let sources = form?.sources else { return nil }
         return sources.first { $0.id == chosenSource } ?? sources.first
+    }
+
+    var style: StyleChoice? {
+        guard let styles = form?.styles else { return nil }
+        return styles.first { $0.id == chosenStyle } ?? styles.first
     }
 
     var output: AudioOutputChoice? {
@@ -61,7 +71,7 @@ final class NewSessionModel {
     var waitsForHeadset: Bool { lookingForHeadset && source?.live == true }
 
     var canStart: Bool {
-        guard let form, source != nil, !name.isEmpty, !starting else { return false }
+        guard let form, source != nil, style != nil, !name.isEmpty, !starting else { return false }
         return Self.isName(name, pattern: form.namePattern) && check?.problem == nil && !waitsForHeadset
             && output != nil
     }
@@ -121,13 +131,42 @@ final class NewSessionModel {
         }
     }
 
+    /// Choose a style, and play a sample of it from its beginning, in place of any that plays.
+    func choose(style id: StyleChoice.ID?) {
+        stopSample()
+        chosenStyle = id
+        playSample()
+    }
+
+    /// Play a sample of the style chosen from its beginning, or stop the one that plays.
+    func playOrStopSample() {
+        if playingSample {
+            stopSample()
+        } else {
+            playSample()
+        }
+    }
+
+    /// Whether a sample of the style chosen plays now.
+    var playingSample: Bool { sample.playing }
+
+    private func playSample() {
+        if let style { sample.play(api.sampleURL(of: style.id)) }
+    }
+
+    func stopSample() {
+        sample.stop()
+    }
+
     /// Ask for the session; the state of its run, once the program has taken it.
     func start() async -> RunState? {
-        guard canStart, let source, let output else { return nil }
+        guard canStart, let source, let style, let output else { return nil }
+        stopSample()  // the session's own music is to be heard
         starting = true
         defer { starting = false }
         do {
-            let request = SessionRequest(sourceId: source.id, recording: recording, name: name, output: output.id)
+            let request = SessionRequest(
+                sourceId: source.id, recording: recording, styleId: style.id, name: name, output: output.id)
             return try await api.start(request)
         } catch {
             problem = error.localizedDescription

@@ -54,7 +54,7 @@ final class Workspace {
     }
 
     func makeSession() {
-        session?.timeline?.pause()  // a session played back would sound over the new one
+        session?.pause()  // a session played back would sound over the new one
         isMakingSession = true
     }
 

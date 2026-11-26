@@ -87,11 +87,19 @@ FILE_FILTERED = "filtered.f32"
 FILTERED_DTYPE = "<f4"  # little-endian float32
 FILE_TICKS = "ticks.jsonl"
 FILE_EVENTS = "events.jsonl"
+FILE_GENERATOR = "generator.jsonl"  # every message the music generator was sent
 FILE_AUDIO = "audio.wav"
 FILE_PD_LOG = "pd.log"
 FILE_LOG = "adamus.log"
 FILE_METRICS = "metrics.json"
 FILE_ACTIVITY = "activity.jsonl"  # what the program did around this session
+# The sample of a style of music, recorded with its settings (its music at rest, then in focus
+# from SAMPLE_FOCUS_FROM_S on), and its cover: in the folder of the style, named by its id, in
+# STYLE_FILES, and as a session keeps them, beside its settings. A sample is a WAV, which a
+# player puts exactly where it is asked to (in a FLAC it lands seconds off) and the program reads.
+FILE_SAMPLE, FILE_COVER = "sample.wav", "cover.png"
+STYLE_FILES = Path(__file__).parent / "server" / "styles"
+SAMPLE_FOCUS_FROM_S = 10.0
 
 # --- Datasets: <DATASETS_DIR>/<dataset>/<recording>/ holds one recording ----------
 DATASETS_DIR = Path("data")

@@ -59,7 +59,7 @@ class TestFolder:
         session.open()
         assert len(logging.getLogger("adamus").handlers) == len(handlers) + 1
         assert sorted(p.name for p in session.directory.iterdir()) == [
-            "adamus.log", "events.jsonl", "filtered.f32", "ticks.jsonl",
+            "adamus.log", "events.jsonl", "filtered.f32", "generator.jsonl", "ticks.jsonl",
         ]  # fmt: skip
         assert logging.getLogger("adamus").level == logging.DEBUG  # all of it into adamus.log
         session.close()
@@ -180,6 +180,14 @@ class TestEvents:
         recorder.event("ERROR", 1.0, 0, where="loop")
         assert read_jsonl(recorder.directory / c.FILE_EVENTS) == [
             {"t": 1.0, "n": 0, "type": "ERROR", "where": "loop"}
+        ]
+
+    def test_what_the_generator_is_sent_is_on_disk_at_once_in_its_order(self, recorder):
+        recorder.generator_message(1.0, 0, "reset;")
+        recorder.generator_message(1.5, 256, "noteoff 48; noteon 43; noteon 59;")
+        assert read_jsonl(recorder.directory / c.FILE_GENERATOR) == [
+            {"t": 1.0, "n": 0, "msg": "reset;"},
+            {"t": 1.5, "n": 256, "msg": "noteoff 48; noteon 43; noteon 59;"},
         ]
 
 

@@ -41,9 +41,9 @@ struct HeadSpaceTests {
         #expect(HeadSpace.normal(of: SmallHead.set.named("Fpz")!) == SIMD3(0, 0, 1))
     }
 
-    @Test func onlyTheElectrodesOnTheHeadArePlaced() {
+    @Test func onlyTheElectrodesOnTheHeadArePlacedButEachIsFoundByItsName() {
         #expect(SmallHead.set.placed.map(\.name) == ["TP9", "AF7", "AF8", "Fpz"])
-        #expect(SmallHead.set.named("AUX") == nil && SmallHead.set.named("AF7")?.name == "AF7")
+        #expect(SmallHead.set.named("AUX")?.position == nil && SmallHead.set.named("AF7")?.name == "AF7")
     }
 }
 

@@ -40,7 +40,11 @@ def run_batch_session(config_path: Path, name: str, recording: Path) -> SessionR
     program without its app."""
     config = load_config(config_path)
     generator = MusicGenerator(
-        config.generator, config.timeouts, lambda kind, /, **fields: None, lambda: OUTPUTS
+        config.generator,
+        config.styles,
+        config.timeouts,
+        lambda kind, /, **fields: None,
+        lambda: OUTPUTS,
     )
     try:
         generator.start(OUTPUTS[0])

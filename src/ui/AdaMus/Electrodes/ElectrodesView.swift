@@ -204,7 +204,8 @@ struct AboutText: View {
 // MARK: - The timeline
 
 /// The name of an electrode's track, by a dot of its colour: it opens the popover of the electrode.
-/// Under the pointer, and while its popover is open, the name takes the accent colour.
+/// Under the pointer, and while its popover is open, the name takes the accent colour. An
+/// electrode with no place on the head has no dot: it has no colour there to be told by.
 struct ElectrodeTrackName: View {
     let set: ElectrodeSet
     let electrode: Electrode
@@ -215,13 +216,8 @@ struct ElectrodeTrackName: View {
         Button {
             open.toggle()
         } label: {
-            Label {
-                Text(electrode.name)
-                    .foregroundStyle(hovered || open ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
-            } icon: {
-                Image(systemName: "circle.fill").imageScale(.small)
-                    .foregroundStyle(set.colours[electrode.name] ?? .gray)
-            }
+            ElectrodeName(set: set, electrode: electrode)
+                .foregroundStyle(hovered || open ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
         }
         .buttonStyle(.plain)
         .pointerStyle(.link)
@@ -234,32 +230,49 @@ struct ElectrodeTrackName: View {
 }
 
 /// The head, still, turned to one electrode with its ring, the others dimmed; its name and what
-/// it records under it.
+/// it records under it. An electrode that may be anywhere, as an auxiliary input, has no place
+/// on the head to show: only its name and what it is.
 struct ElectrodePopover: View {
     let set: ElectrodeSet
     let electrode: Electrode
 
     var body: some View {
         VStack(alignment: .leading, spacing: Metrics.Spacing.small) {
-            HeadRealityView(set: set, dotRadius: Metrics.Head.popoverDot) { scene in
-                if let point = HeadSpace.point(of: electrode) { scene.turn(HeadTurn.facing(simd_normalize(point))) }
-                scene.show(chosen: electrode.name)
-                for other in set.placed where other.name != electrode.name {
-                    scene.light(other.name, Float(Palette.Head.dimmed))
+            if let point = HeadSpace.point(of: electrode) {
+                HeadRealityView(set: set, dotRadius: Metrics.Head.popoverDot) { scene in
+                    scene.turn(HeadTurn.facing(simd_normalize(point)))
+                    scene.show(chosen: electrode.name)
+                    for other in set.placed where other.name != electrode.name {
+                        scene.light(other.name, Float(Palette.Head.dimmed))
+                    }
                 }
+                .frame(height: Metrics.Head.popover.height)
+                .accessibilityLabel("A head, \(electrode.name) on it")
             }
-            .frame(height: Metrics.Head.popover.height)
-            .accessibilityLabel("A head, \(electrode.name) on it")
+            ElectrodeName(set: set, electrode: electrode).font(.headline)
+            AboutText(text: electrode.about, limit: Metrics.Head.popoverText)
+        }
+        .padding()
+        .frame(width: Metrics.Head.popover.width)
+    }
+}
+
+/// The name of an electrode, by a dot of the colour it has on the head; without one when it has
+/// no place there.
+struct ElectrodeName: View {
+    let set: ElectrodeSet
+    let electrode: Electrode
+
+    var body: some View {
+        if electrode.position == nil {
+            Text(electrode.name)
+        } else {
             Label {
                 Text(electrode.name)
             } icon: {
                 Image(systemName: "circle.fill").imageScale(.small)
                     .foregroundStyle(set.colours[electrode.name] ?? .gray)
             }
-            .font(.headline)
-            AboutText(text: electrode.about, limit: Metrics.Head.popoverText)
         }
-        .padding()
-        .frame(width: Metrics.Head.popover.width)
     }
 }

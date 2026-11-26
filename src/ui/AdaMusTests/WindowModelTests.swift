@@ -34,7 +34,8 @@ struct APIClientTests {
             try await program.api.delete("a")
         }
         await #expect(throws: APIError(message: "Field required. Too long.", status: 422)) {
-            try await program.api.start(SessionRequest(sourceId: "s", recording: nil, name: "n", output: "o"))
+            try await program.api.start(
+                SessionRequest(sourceId: "s", recording: nil, styleId: "folk", name: "n", output: "o"))
         }
         await #expect(throws: APIError(message: "AdaMus did not answer as expected.", status: 500)) {
             try await program.api.runState()
@@ -44,12 +45,17 @@ struct APIClientTests {
     @Test func everyCallCarriesTheTokenAndASessionIsAskedForInTheWordsOfTheProgram() async throws {
         let program = StubProgram()
         program.answer("POST api/run", runState(1, "starting"))
-        let request = SessionRequest(sourceId: "dataset", recording: "evening", name: "Morning", output: "AirPods")
+        let request = SessionRequest(
+            sourceId: "dataset", recording: "evening", styleId: "rock", name: "Morning", output: "AirPods")
         _ = try await program.api.start(request)
         let call = try #require(program.made("POST api/run").first)
         #expect(call.token == program.api.token)
         let sent = try JSONSerialization.jsonObject(with: try #require(call.body)) as? [String: String]
-        #expect(sent == ["source_id": "dataset", "recording": "evening", "name": "Morning", "output": "AirPods"])
+        #expect(
+            sent == [
+                "source_id": "dataset", "recording": "evening", "style_id": "rock", "name": "Morning",
+                "output": "AirPods",
+            ])
     }
 }
 
@@ -173,6 +179,21 @@ struct SessionModelTests {
         #expect(session.opened == [.overview, .timeline, .details])
     }
 
+    @Test func whatAPartPlaysIsPausedAsItIsLeft() {
+        let session = SessionModel(api: StubProgram().api, summary: SessionSummary(id: "a", name: "Session a"))
+        defer { session.stop() }
+        // playing as soon as it is asked to: what it plays is not read before this test ends
+        let sample = FileManager.default.temporaryDirectory.appending(path: "sample.wav")
+        session.sample.play(sample)
+        session.part = .overview
+        #expect(session.sample.playing, "the same part chosen again leaves it playing")
+        session.part = .timeline
+        #expect(!session.sample.playing, "the overview left, its sample is paused")
+        session.sample.play(sample)
+        session.stop()
+        #expect(!session.sample.playing && session.sample.time == 0, "another session chosen, it stops")
+    }
+
     @Test func aDashboardThatCannotBeReadSaysWhy() async throws {
         let program = StubProgram()
         program.answer("GET api/sessions/a/dashboard", status: 404, #"{"detail": "No session a."}"#)
@@ -190,7 +211,11 @@ struct NewSessionModelTests {
            {"id": "headset", "title": "Muse 2", "live": true, "recordings": []},
            {"id": "first", "title": "First", "live": false, "recordings": ["f1", "f2"]},
            {"id": "second", "title": "Second", "live": false, "recordings": ["s1", "s2"]}],
-         "sources_hint": "No source.", "name_pattern": "[a-z]+", "name_hint": "Small letters only."}
+         "sources_hint": "No source.",
+         "styles": [
+           {"id": "folk", "title": "Folk"},
+           {"id": "rock", "title": "Rock"}],
+         "name_pattern": "[a-z]+", "name_hint": "Small letters only."}
         """#
     private static let fine = #"{"warning": null, "problem": null}"#
     private static let outputs = #"""
@@ -218,6 +243,41 @@ struct NewSessionModelTests {
         _ = await model.start()
         let sent = try JSONSerialization.jsonObject(with: try #require(program.made("POST api/run").first?.body))
         #expect((sent as? [String: String?])?["output"] == "TV")
+    }
+
+    @Test func theFirstStyleIsChosenAtFirstAndTheSessionIsAskedForWithTheOneChosen() async throws {
+        let (program, model) = await opened()
+        #expect(model.style?.id == "folk")
+        model.choose(style: "rock")
+        model.name = "morning"
+        program.answer("POST api/run", runState(1, "starting"))
+        _ = await model.start()
+        let sent = try JSONSerialization.jsonObject(with: try #require(program.made("POST api/run").first?.body))
+        #expect((sent as? [String: String?])?["style_id"] == "rock")
+    }
+
+    @Test func aStyleChosenPlaysASampleOfItselfWhichTheButtonStopsAndPlaysAgain() async {
+        let (program, model) = await opened()
+        #expect(!model.playingSample)  // the first style, chosen at first, unheard
+        model.choose(style: "rock")
+        #expect(model.style?.id == "rock" && model.playingSample)
+        model.playOrStopSample()
+        #expect(!model.playingSample)
+        model.playOrStopSample()
+        #expect(model.playingSample)
+        model.choose(style: "folk")  // in place of the one that played
+        #expect(model.style?.id == "folk" && model.playingSample)
+        model.name = "morning"
+        program.answer("POST api/run", runState(1, "starting"))
+        _ = await model.start()
+        #expect(!model.playingSample)  // the session's own music is to be heard
+    }
+
+    @Test func aSampleIsAskedForWithTheTokenInItsAddress() async {
+        let (program, _) = await opened()
+        let parts = URLComponents(url: program.api.sampleURL(of: "rock"), resolvingAgainstBaseURL: false)
+        #expect(parts?.path == "/api/styles/rock/sound")
+        #expect(parts?.queryItems == [URLQueryItem(name: "token", value: program.api.token)])
     }
 
     @Test func aRunWhoseSessionNeverStartedIsNotSaidToHaveEnded() async {

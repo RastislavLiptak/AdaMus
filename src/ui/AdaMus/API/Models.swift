@@ -266,7 +266,26 @@ struct Dashboard: Decodable, Sendable {
     let failures: [String]  // what went wrong, each on its own
     let caution: String?  // what bears on how its results are read
     let highlights: [Highlight]
+    let music: Music?  // none of a session from before styles
     let sections: [FactSection]
+}
+
+/// The style a session played: its forms as its sample plays them, how loud the sample is
+/// along it, and its other settings.
+struct Music: Decodable, Hashable, Sendable {
+    let title: String
+    let parts: [MusicPart]
+    let loudness: [Double]  // of equal slices of the sample, the loudest 1
+    let lengthS: Double
+    let facts: [Fact]
+}
+
+struct MusicPart: Decodable, Hashable, Sendable {
+    let title: String
+    let prompt: String  // what the generator was told to play
+    let sound: String  // how loud, and with what
+    let colour: Colour
+    let fromS: Double  // where it begins in the sample
 }
 
 // MARK: - A new session
@@ -278,9 +297,17 @@ struct SourceChoice: Decodable, Identifiable, Hashable, Sendable {
     let recordings: [String]
 }
 
+/// A style of music a session can play; its cover and a sample of it come from the program.
+struct StyleChoice: Decodable, Identifiable, Hashable, Sendable {
+    let id: String
+    let title: String
+}
+
 struct NewSessionForm: Decodable, Sendable {
     let sources: [SourceChoice]
     let sourcesHint: String
+    /// In the program's order; the first is chosen at first.
+    let styles: [StyleChoice]
     let namePattern: String
     let nameHint: String
 }
@@ -305,6 +332,8 @@ struct AudioOutputs: Decodable, Sendable {
 struct SessionRequest: Encodable, Equatable, Sendable {
     let sourceId: String
     let recording: String?
+    /// The style of music the session plays.
+    let styleId: String
     let name: String
     /// The audio output the music is to play on.
     let output: String

@@ -4,6 +4,7 @@ import contextlib
 import json
 import logging
 import platform
+import shutil
 import subprocess
 from collections.abc import Callable
 from importlib import metadata
@@ -17,6 +18,7 @@ from adamus import constants as c
 from adamus.config import write_yaml
 from adamus.session_format import (
     EventFields,
+    GeneratorMessage,
     Meta,
     SessionFacts,
     Tick,
@@ -89,6 +91,7 @@ class SessionRecorder:
 
     _ticks: TextIO
     _events: TextIO
+    _generator: TextIO
     _filtered: BinaryIO
 
     def __init__(self, sessions_root: Path, name: str, started: float) -> None:
@@ -104,6 +107,7 @@ class SessionRecorder:
         opened = self._open.enter_context
         self._ticks = opened((self.directory / c.FILE_TICKS).open("w", encoding="utf-8"))
         self._events = opened((self.directory / c.FILE_EVENTS).open("w", encoding="utf-8"))
+        self._generator = opened((self.directory / c.FILE_GENERATOR).open("w", encoding="utf-8"))
         self._filtered = opened((self.directory / c.FILE_FILTERED).open("wb"))
         handler = logging.FileHandler(self.directory / c.FILE_LOG, encoding="utf-8")
         handler.setFormatter(LogFormat())
@@ -116,6 +120,11 @@ class SessionRecorder:
 
     def write_config(self, raw_config: dict[str, Any]) -> None:
         write_yaml(raw_config, self.directory / c.FILE_CONFIG)
+
+    def keep_style(self, style_id: str) -> None:
+        """A copy of the sample and the cover of the style the session plays."""
+        for name in (c.FILE_SAMPLE, c.FILE_COVER):
+            shutil.copyfile(c.STYLE_FILES / style_id / name, self.directory / name)
 
     def write_model(self, raw_model: dict[str, Any]) -> None:
         """The focus model the session ran with, so that its steps can be computed again."""
@@ -137,6 +146,12 @@ class SessionRecorder:
         """One line of events.jsonl; ``n`` is the number of samples received so far."""
         print(json.dumps({"t": t, "n": n, "type": kind, **fields}), file=self._events)
         self._events.flush()
+
+    def generator_message(self, t: float, n: int, message: str) -> None:
+        """One line of generator.jsonl: what the generator was sent at ``t``."""
+        line: GeneratorMessage = {"t": t, "n": n, "msg": message}
+        print(json.dumps(line, ensure_ascii=False), file=self._generator)
+        self._generator.flush()
 
     def tick(self, row: Tick, filtered: np.ndarray) -> None:
         """Step k: line k of ticks.jsonl and record k of filtered.f32, both on disk at once."""

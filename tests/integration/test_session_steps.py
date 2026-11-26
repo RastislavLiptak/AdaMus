@@ -240,7 +240,8 @@ class TestControl:
         step_messages = [m for m in control.generator.messages if m.count("prompt") == 2]
         assert len(step_messages) == CONTROL_STEPS
         assert re.fullmatch(
-            rf"prompt 0 {IDLE_STYLE} \d\.\d{{3}}; prompt 1 {FOCUS_STYLE} \d\.\d{{3}};",
+            rf"prompt 0 {IDLE_STYLE} \d\.\d{{3}}; prompt 1 {FOCUS_STYLE} \d\.\d{{3}}; "
+            r"volume -?\d+\.\d\d; drumless [01];",
             step_messages[0],
         )
 

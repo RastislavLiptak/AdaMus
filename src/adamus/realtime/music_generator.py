@@ -17,15 +17,9 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from adamus import constants as c
-from adamus.config import Generator, Timeouts
+from adamus.config import Generator, Style, Timeouts
 from adamus.errors import AdamusError
-from adamus.realtime.generator_messages import (
-    START_W_FOCUS,
-    START_W_IDLE,
-    fudi,
-    path_atom,
-    step_messages,
-)
+from adamus.realtime.generator_messages import fudi, path_atom, prompt_messages
 from adamus.session_format import LOG_SEPARATOR, log_time
 
 log = logging.getLogger(__name__)
@@ -104,11 +98,13 @@ class MusicGenerator:
     def __init__(
         self,
         config: Generator,
+        styles: list[Style],
         timeouts: Timeouts,
         report: Report,
         present_outputs: Callable[[], Collection[str]],
     ) -> None:
         self.config = config
+        self.styles = styles  # whose music it makes ready when it starts
         self.timeouts = timeouts
         self._report = report  # told how far the start got: REPORT_PD_STARTED, ...
         self.present_outputs = present_outputs  # the names of the outputs the Mac has now
@@ -134,7 +130,7 @@ class MusicGenerator:
 
     def start(self, output: str) -> None:
         """Start Pd on the audio ``output``, connect, put the generator to sleep, then load
-        assets and model.
+        assets and model, and make the music of every style ready.
 
         A start that fails reports what Pd printed along with the cause.
         """
@@ -151,10 +147,10 @@ class MusicGenerator:
             self._check_output_opened()  # long before: Pd opens it when it starts
             self._report(REPORT_MODEL_LOADED)
             self.send(fudi("buffersize", AUDIO_BUFFER_SAMPLES))
-            # Sent at the start of a session, the prompts played the built-in piano style for
-            # their first 1.5-1.9 s, louder and denser than the quiet form. Encoded here, one
-            # after the other so that each is confirmed, a session finds them ready.
-            for message in step_messages(self.config, START_W_IDLE, START_W_FOCUS):
+            # Sent at the start of a session, a style text played the built-in piano style for
+            # its first 1.5-1.9 s, louder and denser than the quiet form. Encoded here, one
+            # after the other so that each is confirmed, a session finds its music ready.
+            for message in prompt_messages(self.styles):
                 self._await(message, PROMPTS_READY, "make the music of the prompts ready", deadline)
         except AdamusError as problem:
             self.stop()

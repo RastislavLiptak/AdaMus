@@ -135,9 +135,37 @@ def test_a_recording_whose_protocol_cannot_be_played_says_why(form, data):
     assert problem.startswith(f"{data / 'zeta' / 'one' / 'protocol.yaml'}: the recording cannot")
 
 
+def test_the_form_offers_every_style_of_the_configuration_in_its_order(form):
+    assert [(s.id, s.title) for s in form.form().styles] == [
+        (style.id, style.name) for style in Checked().config.styles
+    ]
+    assert form.style("rock") == Checked().config.styles[1] and form.style("jazz") is None
+
+
+@pytest.mark.parametrize("source", ["dataset:zeta", "headset:Muse 2"])
+def test_a_session_plays_the_style_chosen_its_only_one(form, source):
+    recording = "one" if source.startswith("dataset") else None
+    request = SessionRequest(
+        style_id="koto", source_id=source, recording=recording, name="S", output=SPEAKERS
+    )
+    config = form.prepare(request).config
+    assert [style.id for style in config.styles] == ["koto"]
+    assert [style["id"] for style in config.raw["styles"]] == ["koto"]  # as the session keeps it
+
+
+def test_a_style_that_is_not_there_is_refused(form):
+    request = SessionRequest(
+        style_id="jazz", source_id="headset:Muse 2", recording=None, name="S", output=SPEAKERS
+    )
+    with pytest.raises(AdamusError, match="^jazz: no such style$"):
+        form.prepare(request)
+
+
 def test_a_session_over_a_recording_takes_its_protocol(form, data):
     prepared = form.prepare(
-        SessionRequest(source_id="dataset:zeta", recording="one", name="S_1", output=SPEAKERS)
+        SessionRequest(
+            style_id="folk", source_id="dataset:zeta", recording="one", name="S_1", output=SPEAKERS
+        )
     )
     assert prepared.name == "S_1" and prepared.recording == data / "zeta" / "one"
     assert [(b.label, b.duration_s) for b in prepared.config.protocol] == SHORT
@@ -146,7 +174,9 @@ def test_a_session_over_a_recording_takes_its_protocol(form, data):
 
 def test_a_session_with_the_headset_takes_the_configuration(form):
     prepared = form.prepare(
-        SessionRequest(source_id="headset:Muse 2", recording=None, name="L", output=SPEAKERS)
+        SessionRequest(
+            style_id="folk", source_id="headset:Muse 2", recording=None, name="L", output=SPEAKERS
+        )
     )
     assert prepared.recording is None and len(prepared.config.protocol) == 9
 
@@ -155,20 +185,27 @@ def test_a_session_with_the_headset_takes_the_configuration(form):
 def test_a_name_outside_the_rule_is_refused(form, name):
     with pytest.raises(AdamusError, match=NAME_HINT):
         form.prepare(
-            SessionRequest(source_id="headset:Muse 2", recording=None, name=name, output=SPEAKERS)
+            SessionRequest(
+                style_id="folk",
+                source_id="headset:Muse 2",
+                recording=None,
+                name=name,
+                output=SPEAKERS,
+            )
         )
 
 
 def test_a_name_is_taken_without_the_spaces_at_its_ends(form):
     request = SessionRequest(
-        source_id="headset:Muse 2", recording=None, name=" Karel Jedlička 8 ", output=SPEAKERS
-    )
+        style_id="folk", source_id="headset:Muse 2", recording=None, name=" Karel Jedlička 8 ",
+        output=SPEAKERS,
+    )  # fmt: skip
     assert form.prepare(request).name == "Karel Jedlička 8"
 
 
 def test_a_source_that_cannot_run_is_refused(form):
     request = SessionRequest(
-        source_id="dataset:frontal", recording="only_fp", name="S", output=SPEAKERS
+        style_id="folk", source_id="dataset:frontal", recording="only_fp", name="S", output=SPEAKERS
     )
     with pytest.raises(AdamusError, match="The detector needs at least one"):
         form.prepare(request)

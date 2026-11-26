@@ -1,14 +1,8 @@
 # AdaMus
 
-AdaMus steers generated instrumental music with your concentration, measured by EEG in real
-time: the music sounds different while you concentrate than while you rest.
-
-A Muse headset measures the EEG. Every half second the focus detector judges from the last
-seconds of signal how likely it is that you concentrate, and the music generator (Magenta
-RealTime 2 in Pure Data) moves the music between a quiet solo piano and a full piano concerto
-to match. A session follows a protocol of blocks of rest and focus, so that how well the music
-followed can be measured. Each session is stored with everything it recorded, and the app
-shows its results and plays it back on a timeline.
+AdaMus generates instrumental music that changes with your EEG, measured in real time by a
+Muse headset. Each session is stored with everything it recorded, and the app shows its results
+and plays it back on a timeline.
 
 ## Datasets
 

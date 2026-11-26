@@ -135,7 +135,7 @@ class Machine:
         def present() -> list[str]:
             return [output.name for output in audio_outputs.outputs()]
 
-        return MusicGenerator(config.generator, config.timeouts, report, present)
+        return MusicGenerator(config.generator, config.styles, config.timeouts, report, present)
 
     def devices(
         self, config: Config, recording: Path | None, generator: MusicOutput, stop: StopRequest

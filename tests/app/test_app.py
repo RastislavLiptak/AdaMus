@@ -5,11 +5,13 @@ printed and where its API answers, so that the app and the program cannot drift 
 
 import json
 import os
+import plistlib
 import queue
 import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -22,26 +24,39 @@ from tests.support.xcode_builds import one_build_at_a_time
 
 PROTOCOL = [["REST", 20], ["FOCUS", 20], ["REST", 20], ["FREE", 0]]
 XCODE_S = 900  # the longest a build and run of the tests of the app may take
+# The longest one test of the app may take, whatever test is added: one stuck waiting ends there
+# as a failure, and the others still run.
+TEST_S = 60
 READY_S = 120  # the longest the program may take to say where its API answers
 STOP_S = 30  # the longest the program may take to end once its input closes
-# Where Xcode keeps what it built, between runs, so that a run builds only what changed.
-BUILT = ROOT / ".build" / "xcode-tests"
+# Where Xcode keeps what it built, between runs, so that a run builds only what changed: out of
+# the project, whose folder (Documents, say) macOS may guard, asking whether an app run from it
+# may use it; tests that run on their own cannot wait for an answer.
+BUILT = Path.home() / "Library" / "Caches" / "AdaMus" / "xcode-tests"
 UNITS, WINDOW = "AdaMusTests", "AdaMusUITests"  # the targets of the tests of the app
-PRODUCTS = BUILT / "Build" / "Products" / "Debug"
-# The apps the tests of the window run: macOS asks whether they may use the project's folder.
-WINDOW_APPS = [PRODUCTS / "AdaMus.app", PRODUCTS / f"{WINDOW}-Runner.app"]
 SHOWN_OUTPUT = 6000  # characters of the end of what xcodebuild printed, when it failed
 
 
 def xcode(action, target, environment=None, results=None):
-    """An action of Xcode on the tests of ``target``; what they did into ``results``."""
+    """An action of Xcode on the tests of ``target``; what they did into ``results``. Each test
+    may take TEST_S at most; while the window is tested, the display stays awake, so that the
+    screen does not lock under the tests."""
     kept = ["-resultBundlePath", str(results)] if results is not None else []
+    limited = ["-test-timeouts-enabled", "YES", "-default-test-execution-time-allowance",
+               str(TEST_S), "-maximum-test-execution-time-allowance", str(TEST_S)]  # fmt: skip
+    awake = ["caffeinate", "-d"] if target.split("/")[0] == WINDOW else []
     return subprocess.run(
-        ["xcodebuild", action, "-project", "src/ui/AdaMus.xcodeproj", "-scheme", "AdaMus",
+        [*awake, "xcodebuild", action, "-project", "src/ui/AdaMus.xcodeproj", "-scheme", "AdaMus",
          "-destination", "platform=macOS,arch=arm64", "-derivedDataPath", str(BUILT),
-         f"-only-testing:{target}", "-quiet", *kept],
+         f"-only-testing:{target}", "-quiet", *kept, *limited],
         cwd=ROOT, env=environment, capture_output=True, text=True, timeout=XCODE_S, check=False,
     )  # fmt: skip
+
+
+def screen_locked():
+    """Whether the screen of the Mac is locked: no window can be clicked then."""
+    shown = subprocess.run(["ioreg", "-n", "Root", "-d1", "-a"], capture_output=True, check=True)
+    return bool(plistlib.loads(shown.stdout).get("IOConsoleLocked", False))
 
 
 def counted(results):
@@ -96,7 +111,7 @@ def rare_answers():
         "dashboard": Dashboard(
             name="name", problem="problem", pending="pending", summary=[], failures=["failure"],
             caution="caution",
-            highlights=[], sections=[],
+            highlights=[], music=None, sections=[],
         ).model_dump(mode="json"),
         "source_check": SourceCheck(warning="warning", problem="problem").model_dump(mode="json"),
         "run_state": RunState(
@@ -123,8 +138,6 @@ def run_on_a_program(folder, target, *options, given=None):
         }  # fmt: skip
         with one_build_at_a_time():  # the build only: the tests that follow build nothing
             done = xcode("build-for-testing", target)
-            if done.returncode == 0 and target == WINDOW:  # macOS asks once (sign_app.sh)
-                subprocess.run(["sh", "scripts/sign_app.sh", *WINDOW_APPS], cwd=ROOT, check=True)
         if done.returncode == 0:
             done = xcode("test-without-building", target, environment, results)
     finally:
@@ -144,11 +157,18 @@ def test_the_tests_of_the_app_pass(tmp_path):
     assert ended == 0
 
 
+def test_the_apps_of_the_tests_are_built_out_of_the_project():
+    """macOS guards folders such as Documents, where the project may lie: an app run from there
+    would be asked about it, and tests that run on their own cannot answer."""
+    assert not BUILT.is_relative_to(ROOT) and not BUILT.is_relative_to(Path.home() / "Documents")
+
+
 @pytest.mark.window
 def test_the_window_does_what_the_operator_asks(tmp_path):
     """The window used as a person would, with the mouse and the keyboard: the app started by
     the tests of the window (src/ui/AdaMusUITests), on a program whose sessions with the headset
     take seconds, to be stopped by hand."""
+    assert not screen_locked(), "the screen is locked: the window can be tested only on an open one"
     folder = tmp_path / "run"
     play_session(folder, "morning_focus", PROTOCOL, recording="short")
     done, counts, ended = run_on_a_program(folder, WINDOW, PACED)

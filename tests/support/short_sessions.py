@@ -15,7 +15,8 @@ CONTROL = [["REST", 30], ["FOCUS", 30], ["REST", 30], ["FOCUS", 30]]
 CONTROL_STEPS = (120 * FS - CONTEXT) // H + 1  # 233
 
 # The two forms of the music, as the shipped configuration gives them.
-IDLE_STYLE, FOCUS_STYLE = config_with().generator.prompt_idle, config_with().generator.prompt_focus
+STYLE = config_with().styles[0]  # the one a session of the configuration plays
+IDLE_STYLE, FOCUS_STYLE = STYLE.rest, STYLE.focus
 
 
 def short_session(tmp_path, matrix=None, **options):

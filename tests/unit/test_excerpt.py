@@ -80,7 +80,7 @@ def test_a_time_is_shown_as_the_app_shows_it(seconds, shown):
 def test_the_parts_of_the_data_in_their_order(data, written):
     assert list(data) == [
         "session", "part", "summary", "protocol", "detector", "music", "eeg", "log", "events",
-        "configuration", "files",
+        "generator", "configuration", "files",
     ]  # fmt: skip
     assert written.endswith("}\n")
 
@@ -245,9 +245,8 @@ def test_the_limits_of_the_detector_and_every_step_of_the_part_whole(data, playe
 
 
 def test_a_part_before_any_step_and_block_has_none(played, tracks):
-    start = tracks.timeline.start_s
-    assert start < 0, "the music begins before the first sample"
-    early = cut(played.directory, tracks, start, start / 2)
+    """As of a session from when the music began before the first sample."""
+    early = cut(played.directory, tracks, -1.0, -0.5)
     assert early["detector"]["steps"]["rows"] == [] and early["protocol"] == []
     assert early["summary"]["detection_by_block"] == []
 
@@ -342,20 +341,31 @@ def test_the_events_of_the_part_as_they_were_stored(data, played):
     }
 
 
+def test_what_the_generator_was_sent_in_the_part_as_it_was_stored(data, played, tracks):
+    sent = read_jsonl(played.directory / c.FILE_GENERATOR)
+    inside = [line for line in sent if START_S <= line["n"] / FS <= END_S]
+    assert any("noteon" in line["msg"] for line in inside), "chords in the part"
+    assert any("prompt 0" in line["msg"] for line in inside), "steps in the part"
+    assert data["generator"] == [{"time_s": round(line["n"] / FS, 3), **line} for line in inside]
+    first, last = sent[5], sent[-5]
+    ends = cut(played.directory, tracks, first["n"] / FS, last["n"] / FS)["generator"]
+    assert ends[0]["n"] == first["n"] and ends[-1]["n"] == last["n"]  # both ends belong to it
+
+
 def test_the_configuration_it_ran_with_whole_in_its_order(copied, tracks):
     settings = yaml.safe_load((copied / c.FILE_CONFIG).read_text())
-    settings["generator"]["prompt_idle"] = "tichý klavír"
+    settings["styles"][0]["name"] = "Tichý klavír"
     (copied / c.FILE_CONFIG).write_text(yaml.safe_dump(settings, sort_keys=False))
     written = excerpt_of(copied, tracks, START_S, END_S)
     assert json.loads(written)["configuration"] == settings
     assert list(json.loads(written)["configuration"]) == list(settings)
-    assert '"prompt_idle": "tichý klavír"' in written  # its letters as they are
+    assert '"name": "Tichý klavír"' in written  # its letters as they are
 
 
 def test_the_files_of_the_session_there(copied, tracks):
     (copied / c.FILE_PD_LOG).unlink()
-    names = [c.FILE_TICKS, c.FILE_FILTERED, c.FILE_RAW, c.FILE_EVENTS, c.FILE_LOG, c.FILE_AUDIO,
-             c.FILE_META, c.FILE_METRICS, c.FILE_CONFIG]  # fmt: skip
+    names = [c.FILE_TICKS, c.FILE_FILTERED, c.FILE_RAW, c.FILE_EVENTS, c.FILE_GENERATOR,
+             c.FILE_LOG, c.FILE_AUDIO, c.FILE_META, c.FILE_METRICS, c.FILE_CONFIG]  # fmt: skip
     assert cut(copied, tracks)["files"] == {name: str((copied / name).resolve()) for name in names}
 
 

@@ -27,7 +27,17 @@ MUSE_REFERENCE = "Fpz"
 # The reference electrode of each headset whose reference is known, by its BrainFlow board id
 REFERENCES = {board.value: MUSE_REFERENCE for board in BoardIds if board.name.startswith("MUSE")}
 
+# The auxiliary input of a Muse, under the names the recordings give it: Mind Monitor's and
+# BrainFlow's. It has no place on the head, but what it is can be said.
+AUXILIARY_NAMES = ("AUX_RIGHT", "Right AUX")
+AUXILIARY = (
+    "{name} is the auxiliary input of the Muse headband. An extra electrode can be plugged into "
+    "its micro USB port and put anywhere on the head or the body, so what it records depends on "
+    "where it was put, which the recording does not say. With nothing plugged in it records no "
+    "brain signal, only noise picked up by the open input. The focus detector does not use it."
+)
 WRITTEN = {
+    **{name: AUXILIARY.format(name=name) for name in AUXILIARY_NAMES},
     "AF7": (
         "AF7 records the left prefrontal cortex, the part of the brain that holds attention, "
         "keeps information in working memory and holds back impulses. When you concentrate, "

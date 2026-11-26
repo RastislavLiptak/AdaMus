@@ -40,7 +40,9 @@ class Run:
         self.form.look_for_headset()
 
     def ask(self, source="dataset:synthetic", recording="short", name="S01", output=SPEAKERS):
-        request = SessionRequest(source_id=source, recording=recording, name=name, output=output)
+        request = SessionRequest(
+            style_id="folk", source_id=source, recording=recording, name=name, output=output
+        )
         return self.runner.request(self.form.prepare(request))
 
     def serve_one(self, while_running=None):

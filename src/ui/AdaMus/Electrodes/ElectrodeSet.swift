@@ -20,7 +20,8 @@ struct ElectrodeSet: Sendable {
     /// The electrodes that lie on the head.
     var placed: [Electrode] { electrodes.filter { $0.position != nil } }
 
-    func named(_ name: String) -> Electrode? { placed.first { $0.name == name } }
+    /// Any electrode the session recorded, on the head or not.
+    func named(_ name: String) -> Electrode? { electrodes.first { $0.name == name } }
 }
 
 /// The space the head is drawn in: metres, y up, the face toward the viewer at +z, the middle of

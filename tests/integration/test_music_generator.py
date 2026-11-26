@@ -21,6 +21,7 @@ from adamus.errors import AdamusError
 from adamus.realtime import music_generator
 from adamus.realtime.generator_messages import (
     fudi,
+    prompt_messages,
     session_end_messages,
     session_start_messages,
     step_messages,
@@ -52,7 +53,9 @@ class Generators:
             generator={**self._stand_in_generator, **(generator or {})},
             timeouts={"pd_connect_s": 10, "model_load_s": 10, **(timeouts or {})},
         )
-        made = MusicGenerator(config.generator, config.timeouts, self._report, self._outputs)
+        made = MusicGenerator(
+            config.generator, config.styles, config.timeouts, self._report, self._outputs
+        )
         self.made.append(made)
         return made
 
@@ -204,12 +207,14 @@ class TestStart:
         generator.start(SPEAKERS)
         heads = [message.split()[0] for message in sent]
         assert heads.index("model") < heads.index("prompt")
-        session_prompts = [
-            message
-            for message in session_start_messages(generator.config, tmp_path / c.FILE_AUDIO)
-            if message.startswith("prompt")
-        ]
-        assert [message for message in sent if message.startswith("prompt")] == session_prompts
+        encoded = [message for message in sent if message.startswith("prompt")]
+        assert encoded == prompt_messages(generator.styles)
+        texts = {message.split(" ", 2)[2].rsplit(" ", 1)[0] for message in encoded}
+        for style in generator.styles:  # whichever a session plays, its music is ready
+            started = session_start_messages(generator.config, style, tmp_path / c.FILE_AUDIO)
+            assert {
+                m.split(" ", 2)[2].rsplit(" ", 1)[0] for m in started if m.startswith("prompt")
+            } <= texts
 
     def test_a_start_ends_once_the_music_of_each_prompt_is_ready(self, make_generator, monkeypatch):
         """Measured with Pd: a session started at once after the engine said so was quiet from
@@ -230,10 +235,13 @@ class TestStart:
         generator.copy_output_to(None)
         lines = filter(None, map(read_log_line, make_generator.printed.read_text().splitlines()))
         ready = [t for t, said in lines if said.startswith(music_generator.PROMPTS_READY)]
-        assert len(prompts_sent) == len(ready) == 2
+        assert len(prompts_sent) == len(ready) == 2 * len(generator.styles)
         cut = MILLISECOND_S  # the times of the log are cut to milliseconds
-        assert prompts_sent[0] <= ready[0] + cut and ready[0] <= prompts_sent[1] + cut
-        assert prompts_sent[1] <= ready[1] + cut <= ended + cut
+        for sent_now, ready_now, sent_next in zip(
+            prompts_sent, ready, prompts_sent[1:], strict=False
+        ):
+            assert sent_now <= ready_now + cut and ready_now <= sent_next + cut  # one after another
+        assert ready[-1] <= ended + cut
 
     def test_music_of_the_prompts_that_never_gets_ready_fails_the_start(
         self, make_generator, monkeypatch
@@ -544,11 +552,12 @@ class TestSession:
         """Send what a session sends: start, optionally new weights, end."""
         folder.mkdir(parents=True, exist_ok=True)
         generator.copy_output_to(folder / c.FILE_PD_LOG)
-        for message in session_start_messages(generator.config, folder / c.FILE_AUDIO):
+        style = generator.styles[0]
+        for message in session_start_messages(generator.config, style, folder / c.FILE_AUDIO):
             generator.send(message)
         time.sleep(seconds)
         if weights:
-            generator.send(" ".join(step_messages(generator.config, *weights)))
+            generator.send(" ".join(step_messages(style, *weights, focused=weights[1] >= 0.5)))
             time.sleep(seconds)
         for message in session_end_messages():
             generator.send(message)

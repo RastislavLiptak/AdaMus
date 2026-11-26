@@ -1,9 +1,10 @@
 """The form for a new session: what it offers, what it checks, and the session it prepares.
 
 The steps are those of a session from the start: a source (the headset, or a dataset
-and one of its recordings), a name, and a check that the source has an electrode of
-the detector. A source is known by its kind and its name, e.g. ``dataset:synthetic``.
-The music plays on the audio output chosen in it: at first the one the system plays on.
+and one of its recordings), the style of its music, a name, and a check that the source has an
+electrode of the detector. A source is known by its kind and its name, e.g.
+``dataset:synthetic``. The music plays on the audio output chosen in it: at first the one the
+system plays on.
 
 The form looks for the sources itself: the datasets each time it is read, so that one put
 into the data folder (or a recording a session stored there) is offered at once; the headset
@@ -19,7 +20,7 @@ from adamus import constants as c
 from adamus import datasets
 from adamus.activity_log import ACTION_HEADSET_LOOKED_FOR, ActivityLog
 from adamus.audio_outputs import AudioOutput
-from adamus.config import Config
+from adamus.config import Config, Style, with_style
 from adamus.errors import AdamusError
 from adamus.machine import Machine, RunningGenerator
 from adamus.server import api_models
@@ -106,10 +107,17 @@ class NewSession:
             )
             for source in self.sources()
         ]
+        styles = [
+            api_models.StyleChoice(id=style.id, title=style.name) for style in self._config().styles
+        ]
         return api_models.NewSessionForm(
-            sources=sources, sources_hint=SOURCES_HINT, name_pattern=SESSION_NAME,
+            sources=sources, sources_hint=SOURCES_HINT, styles=styles, name_pattern=SESSION_NAME,
             name_hint=NAME_HINT,
         )  # fmt: skip
+
+    def style(self, style_id: str) -> Style | None:
+        """The style of the configuration known by ``style_id``, if there is one."""
+        return next((style for style in self._config().styles if style.id == style_id), None)
 
     def sources(self) -> list[Source]:
         """The headset, when the last look found it, and the datasets in the data folder now."""
@@ -173,6 +181,7 @@ class NewSession:
             raise AdamusError(checked.problem)
         output = self._output(request.output)
         config, recording = self._config_and_recording(request.source_id, request.recording)
+        config = with_style(config, request.style_id)
         return PreparedSession(config, name, self._source(request.source_id), recording, output)
 
     def _source(self, source: str) -> Source:

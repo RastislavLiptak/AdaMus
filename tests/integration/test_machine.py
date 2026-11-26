@@ -77,7 +77,7 @@ class TestInstallationOfTheGenerator:
     def generator(self, folder="generator"):
         from adamus.config import Generator
 
-        return Generator(folder, "mrt2_small", "quiet piano", "loud orchestra")
+        return Generator(folder, "mrt2_small", 5, 5)
 
     def script(self, tmp_path, body):
         script = tmp_path / the_computer.INSTALL_SCRIPT

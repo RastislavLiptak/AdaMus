@@ -6,6 +6,7 @@
 // which an app built for a test may not read unasked.) How the app starts a program, follows it
 // and ends it, small programs of the tests show. Run alone, from Xcode, the tests of the real
 // program are left out.
+import AVFoundation
 import Foundation
 import Testing
 
@@ -176,6 +177,14 @@ struct RealProgramTests {
         #expect(form.outputs?.outputs.map(\.id) == ["TV", "MacBook Pro Speakers"])
         #expect(form.output?.id == "MacBook Pro Speakers")
         form.chosenOutput = "TV"
+        // the styles of the configuration, and a sample of one, asked for without a header
+        #expect(form.form?.styles.map(\.id) == ["folk", "rock", "country", "koto", "oud"])
+        #expect(form.style?.id == "folk")
+        form.choose(style: "rock")
+        form.stopSample()
+        let (sample, answer) = try await URLSession.shared.data(from: api.sampleURL(of: "rock"))
+        #expect((answer as? HTTPURLResponse)?.statusCode == 200 && sample.count > 1_000_000)
+        #expect(sample.prefix(4) == Data("RIFF".utf8))  // a WAV, which the player and the program read
         form.chosenSource = form.form?.sources.first { !$0.live }?.id
         await form.checkChoice()
         #expect(form.recording != nil && form.check?.problem == nil)
@@ -196,6 +205,36 @@ struct RealProgramTests {
         await run.follow()
         #expect(run.problem == nil && run.state.problem == nil)
         let id = try #require(run.state.sessionId)
+        // its overview has the music it played, with the sample and the cover it kept, which
+        // a player and an image take as they are
+        let music = try #require(try await api.dashboard(of: id).music)
+        #expect(music.title == "Rock" && music.parts.map(\.title) == ["At Rest", "In Focus"])
+        #expect(music.parts[1].sound.contains("Power chords") && !music.loudness.isEmpty)
+        let (kept, cover) = api.music(of: id)
+        let length = try await AVURLAsset(url: kept).load(.duration).seconds
+        #expect(abs(length - music.lengthS) < 0.1)
+        // played from where it was put, to its end, then again from its beginning
+        let player = SamplePlayer()
+        player.seek(to: music.lengthS - 0.3)
+        player.play(kept)
+        for _ in 0..<50 where player.playing { try await Task.sleep(for: .milliseconds(100)) }
+        #expect(!player.playing && player.time == 0, "played to its end within 5 s, from where it was put")
+        player.play(kept)
+        for _ in 0..<20 where player.time == 0 { try await Task.sleep(for: .milliseconds(100)) }
+        #expect(player.playing && player.time > 0 && player.time < 2.5, "and again from its beginning")
+        // put elsewhere as it plays, it is there at once, not where it was until the seek lands
+        player.seek(to: 10)
+        #expect(player.time == 10)
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(player.time > 10 && player.time < 11, "and plays on from there")
+        // paused, it stays where it stopped
+        player.pause()
+        let paused = player.time
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(!player.playing && paused > 10 && player.time == paused, "paused where it stopped")
+        player.stop()
+        let (picture, given) = try await URLSession.shared.data(from: cover)
+        #expect((given as? HTTPURLResponse)?.statusCode == 200 && picture.starts(with: [0x89, 0x50, 0x4E, 0x47]))
         // listed under the name it was given (the stand-in computer's clock starts in 1970, so
         // which session is newest says nothing here)
         let listed = try await api.sessions(from: 0).sessions

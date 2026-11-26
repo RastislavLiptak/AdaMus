@@ -48,7 +48,7 @@ include = ["adamus*"]  # src/ui is the app, built by Xcode
 
 [tool.setuptools.package-data]
 "adamus.realtime" = ["pure_data_patch.pd"]
-"adamus.server" = ["head_model.json"]  # scripts/export_head_model.py
+"adamus.server" = ["head_model.json", "styles/*/*"]  # head: scripts/export_head_model.py
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

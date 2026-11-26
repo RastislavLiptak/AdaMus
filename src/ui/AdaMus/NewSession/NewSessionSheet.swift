@@ -1,5 +1,6 @@
 // A new session, in a sheet over the window (HIG "Sheets"): the form, in the order the session
-// needs it (the source with its recording, the audio output, the name), then the session as it runs, with a button that stops it.
+// needs it (the source with its recording, the audio output, the style of its music, the name),
+// then the session as it runs, with a button that stops it.
 // Once it has ended and been analysed, the sheet closes on its overview.
 import SwiftUI
 
@@ -72,6 +73,7 @@ struct SessionFormView: View {
                     .accessibilityLabel("Recording")  // as the name below
                 }
                 outputPicker
+                musicPicker
                 TextField("Name", text: $model.name, prompt: Text("Required"))
                     .accessibilityLabel("Name")  // the form shows its title beside it, unread
                 if let hint = model.nameProblem {
@@ -93,6 +95,7 @@ struct SessionFormView: View {
         .navigationTitle("New Session")
         // what the program says of the choice; a later choice cancels the look at an earlier one
         .task(id: [model.source?.id, model.recording]) { await model.checkChoice() }
+        .onDisappear { model.stopSample() }
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel", role: .cancel) { dismiss() }
@@ -123,6 +126,25 @@ struct SessionFormView: View {
                     .labelsHidden()
                     lookAgain
                 }
+            }
+        }
+    }
+
+    /// The style of the music, and beside it a button that plays a sample of the one chosen or
+    /// stops it, as the buttons that look again stand beside the source and the output.
+    private var musicPicker: some View {
+        LabeledContent("Music") {
+            HStack {
+                Picker("Music", selection: Binding(get: { model.style?.id }, set: { model.choose(style: $0) })) {
+                    ForEach(model.form?.styles ?? []) { Text($0.title).tag(Optional($0.id)) }
+                }
+                .labelsHidden()
+                let playing = model.playingSample
+                Button(playing ? "Stop Sample" : "Play Sample", systemImage: playing ? "stop.fill" : "play.fill") {
+                    model.playOrStopSample()
+                }
+                .labelStyle(.iconOnly)
+                .help(playing ? "Stop the sample" : "Play a sample of the music chosen")
             }
         }
     }

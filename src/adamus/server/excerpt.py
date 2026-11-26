@@ -4,9 +4,10 @@ everything the session holds between those two moments, as one JSON document.
 It reads without the window: the session and where its folder is, the part in the time of the
 timeline (as the app shows it too) and in samples, a summary of the part, then its data: the
 blocks of the protocol over it, every step of the detector in it, the music and how far it was
-steered, every electrode, the lines of the log, the events, the configuration the session ran
-with and its files. Times are seconds of the timeline: 0 is the first sample of EEG. A table is
-its columns and its rows; a list of numbers stays on one line, so that it reads as a table.
+steered, every electrode, the lines of the log, the events, what the music generator was sent,
+the configuration the session ran with and its files. Times are seconds of the timeline: 0 is
+the first sample of EEG. A table is its columns and its rows; a list of numbers stays on one
+line, so that it reads as a table.
 """
 
 import json
@@ -44,8 +45,8 @@ ROW_MARKED = r'"<row (\d+)>"'
 SPREAD = (np.min, np.max, np.std)  # of the samples of an electrode in the part
 SAMPLE_0_LINE = 2  # of eeg.csv: its first line names the electrodes
 FILES = (
-    c.FILE_TICKS, c.FILE_FILTERED, c.FILE_RAW, c.FILE_EVENTS, c.FILE_LOG, c.FILE_PD_LOG,
-    c.FILE_AUDIO, c.FILE_META, c.FILE_METRICS, c.FILE_CONFIG,
+    c.FILE_TICKS, c.FILE_FILTERED, c.FILE_RAW, c.FILE_EVENTS, c.FILE_GENERATOR, c.FILE_LOG,
+    c.FILE_PD_LOG, c.FILE_AUDIO, c.FILE_META, c.FILE_METRICS, c.FILE_CONFIG,
 )  # fmt: skip
 STEP_COLUMNS = [
     "k", "end_s", "t_eeg", "block_index", "block_label", "full_window", "valid", "f", "f_held",
@@ -189,6 +190,16 @@ def events_in(session: SessionFolder, start_s: float, end_s: float) -> list[dict
         {"time_s": rounded(event["n"] / session.fs, SECONDS), **event}
         for event in session.events
         if start_s <= event["n"] / session.fs <= end_s
+    ]
+
+
+def generator_in(session: SessionFolder, start_s: float, end_s: float) -> list[dict[str, Any]]:
+    """What the music generator was sent in the part, as generator.jsonl holds it, each with its
+    time on the timeline."""
+    return [
+        {"time_s": rounded(sent["n"] / session.fs, SECONDS), **sent}
+        for sent in session.generator_messages
+        if start_s <= sent["n"] / session.fs <= end_s
     ]
 
 
@@ -362,6 +373,7 @@ def excerpt_of(folder: Path, tracks: SessionTracks, start_s: float, end_s: float
         "eeg": eeg_data(tracks, start_s, end_s),
         "log": log_data(tracks, start_s, end_s),
         "events": events_in(session, start_s, end_s),
+        "generator": generator_in(session, start_s, end_s),
         "configuration": session.settings,
         "files": {name: str((folder / name).resolve()) for name in present},
     }

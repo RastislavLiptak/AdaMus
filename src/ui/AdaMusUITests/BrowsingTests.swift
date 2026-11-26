@@ -72,7 +72,7 @@ final class BrowsingTests: WindowTests {
         let show = app.toolbars.buttons["Show Inspector"]
         XCTAssertTrue(becomesEnabled(show), "the timeline, with its logs beside it")
         app.buttons["Play"].click()
-        sleep(20)  // the lines of the log come as it plays, more than the inspector shows at once
+        sleep(12)  // the lines of the log come as it plays, more than the inspector shows at once
         app.buttons["Pause"].click()
         show.click()
         try showsTheNewestLines("opened")

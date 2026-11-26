@@ -79,6 +79,7 @@ def test_a_session_over_a_recording_from_the_form_to_the_dashboard(program):
         form = operator.call("POST", "/api/new-session/refresh")  # as the form does as it opens
         seen["sources"] = [source["id"] for source in form["sources"]]
         request = {
+            "style_id": "folk",
             "source_id": "dataset:simulated",
             "recording": "short",
             "name": "S01",
@@ -195,6 +196,7 @@ def test_deleting_a_session_with_the_headset_takes_its_recording_from_the_source
     def actions(operator):
         operator.call("POST", "/api/new-session/refresh")  # as the form does as it opens
         request = {
+            "style_id": "folk",
             "source_id": "headset:Muse 2",
             "recording": None,
             "name": "L",
@@ -222,6 +224,7 @@ def test_the_app_ending_mid_session_ends_the_session_as_a_stop_and_then_the_prog
     def actions(operator):
         operator.call("POST", "/api/new-session/refresh")
         request = {
+            "style_id": "folk",
             "source_id": "headset:Muse 2",
             "recording": None,
             "name": "live",

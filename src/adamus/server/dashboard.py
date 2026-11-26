@@ -8,16 +8,21 @@ that failed early) still gets what can be read, and the reason for the rest.
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+import soundfile
+
 from adamus import constants as c
 from adamus.activity_log import ACTION_ANALYSIS_FAILED, ACTION_SESSION_STARTED, ACTION_START_FAILED
 from adamus.errors import AdamusError
-from adamus.evaluation.session_reader import NOT_COMPLETE, load_session_folder
+from adamus.evaluation.session_reader import NOT_COMPLETE, SessionFolder, load_session_folder
 from adamus.evaluation.session_statistics import Statistics, statistics_of
 from adamus.server.api_models import (
     Colour,
     Dashboard,
     Format,
     Highlight,
+    Music,
+    MusicPart,
 )
 from adamus.server.dashboard_sections import (
     activity_section,
@@ -25,6 +30,7 @@ from adamus.server.dashboard_sections import (
     caution_of,
     configuration_section,
     detection_section,
+    fact,
     failures_of,
     files_section,
     music_section,
@@ -40,6 +46,7 @@ from adamus.server.dashboard_sections import (
 from adamus.server.timeline import EEG_GROUP, FOCUSED, GROUP_COLOURS, MUSIC_GROUP, RESTING
 from adamus.session_format import name_of, read_jsonl
 
+LOUDNESS = 160  # slices of a sample, each its own bar, as the style samples were shown
 UNREADABLE = "This session cannot be read"
 DID_NOT_START = "This session did not start"
 # The colours of the kinds of result: those of their groups of tracks on the timeline, and of
@@ -94,6 +101,47 @@ def highlights_of(statistics: Statistics, metrics: dict[str, Any]) -> list[Highl
     ]
 
 
+def music_of(session: SessionFolder) -> Music | None:
+    """The style the session played, with every setting of it (Config.style), and how loud its
+    sample is along it; none for a session from before styles, which kept no sample."""
+    sample = session.directory / c.FILE_SAMPLE
+    if "styles" not in session.settings or not sample.is_file():
+        return None
+    style: dict[str, Any] = session.settings["styles"][0]
+    sound, rate = soundfile.read(sample, always_2d=True)
+    mono = sound.mean(axis=1)
+    loudness = np.array([np.sqrt(np.mean(part**2)) for part in np.array_split(mono, LOUDNESS)])
+
+    def sound_of(volume_db: float, power_chords: bool, drums: bool) -> str:
+        return " · ".join([
+            f"{volume_db:+g} dB".replace("-", "−"),
+            "Power chords" if power_chords else "Full chords",
+            "Drums" if drums else "No drums",
+        ])  # fmt: skip
+
+    parts = [
+        MusicPart(title="At Rest", prompt=style["rest"], colour=RESTING, from_s=0.0,
+                  sound=sound_of(style["rest_volume_db"], False, False)),
+        MusicPart(title="In Focus", prompt=style["focus"], colour=FOCUSED,
+                  from_s=c.SAMPLE_FOCUS_FROM_S,
+                  sound=sound_of(style["focus_volume_db"], style["focus_power_chords"],
+                                 style["focus_drums"])),
+    ]  # fmt: skip
+    return Music(
+        title=style["name"],
+        parts=parts,
+        loudness=[float(level) for level in loudness / (loudness.max() or 1)],
+        length_s=len(mono) / rate,
+        facts=[
+            fact("Tempo", f"{style['tempo_bpm']:g} BPM"),
+            fact("Chords, One a Bar", " ".join(style["chords"])),
+            fact("Gap Between Chords", style["chord_gap_s"], "duration"),
+            fact("Temperature", style["temperature"], "decimal"),
+            fact("Top K", style["top_k"], "count"),
+        ],
+    )
+
+
 # --- The whole, readable ----------------------------------------------------------
 
 
@@ -112,6 +160,7 @@ def readable_dashboard(
         failures=failures_of(session, statistics, activity),
         caution=caution_of(session),
         highlights=highlights_of(statistics, metrics),
+        music=music_of(session),
         sections=[
             run_section(session, statistics, activity),
             blocks_section(session, metrics),
@@ -157,5 +206,5 @@ def dashboard_of(folder: Path, own_recording: Path | None, analysis_pending: boo
         said = start_problem(activity) or why_unreadable(folder, problem)
         return Dashboard(
             name=name, problem=said, pending=pending, summary=[],
-            failures=[], caution=None, highlights=[], sections=[files_section(folder)],
+            failures=[], caution=None, highlights=[], music=None, sections=[files_section(folder)],
         )  # fmt: skip

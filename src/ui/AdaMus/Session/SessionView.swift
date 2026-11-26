@@ -60,7 +60,11 @@ struct SessionView: View {
     @ViewBuilder private func content(of part: SessionPart) -> some View {
         switch part {
         case .overview:
-            ofTheDashboard { OverviewView(dashboard: $0, electrodes: session.electrodes) }
+            ofTheDashboard {
+                OverviewView(
+                    dashboard: $0, electrodes: session.electrodes, music: session.api.music(of: session.summary.id),
+                    player: session.sample)
+            }
         case .details:
             ofTheDashboard { DetailsView(dashboard: $0) }
         case .timeline:

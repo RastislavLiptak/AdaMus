@@ -75,9 +75,9 @@ class TestRequiredChecks:
         assert "config.yaml in the repository lists every key" in fixes(program)["Configuration"]
 
     def test_invalid_configuration_is_reported_with_its_problems(self, program):
-        program.raw["generator"]["prompt_focus"] = "disco 80"
+        program.raw["styles"][0]["focus"] = "disco 80"
         assert program.start() == 1
-        assert "generator.prompt_focus: not a valid style text" in told(program)["Configuration"][1]
+        assert "styles[0].focus: not a valid style text" in told(program)["Configuration"][1]
 
     @pytest.mark.parametrize("model", ["missing", "{}", "not json"])
     def test_a_focus_model_that_cannot_be_used_is_trained(self, program, model):

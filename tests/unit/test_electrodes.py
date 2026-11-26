@@ -9,6 +9,7 @@ from brainflow.board_shim import BoardIds
 from adamus import constants as c
 from adamus.evaluation.session_reader import load_session_folder
 from adamus.server.electrodes import (
+    AUXILIARY_NAMES,
     MUSE_REFERENCE,
     REGIONS,
     WRITTEN,
@@ -66,13 +67,19 @@ def test_the_electrodes_of_a_muse_session_in_the_order_of_its_rows_then_its_refe
     }
 
 
-def test_an_input_that_is_no_place_on_the_head_has_none(copied):
-    session = with_meta(copied, electrode_rows={"AF7": 0, "AUX_RIGHT": 4})
+@pytest.mark.parametrize("name", AUXILIARY_NAMES)
+def test_the_auxiliary_input_has_no_place_on_the_head_but_says_what_it_is(copied, name):
+    session = with_meta(copied, electrode_rows={"AF7": 0, name: 4})
     aux = electrodes_of(session)[1]
-    assert (aux.name, aux.position, aux.normal) == ("AUX_RIGHT", None, None)
-    assert aux.about == (
-        "AUX_RIGHT is not one of the standard electrode positions, so nothing general can be "
-        "said about it."
+    assert (aux.name, aux.position, aux.normal) == (name, None, None)
+    assert aux.about.startswith(f"{name} is the auxiliary input of the Muse headband")
+
+
+def test_an_input_that_is_no_place_on_the_head_and_is_not_known_says_so(copied):
+    session = with_meta(copied, electrode_rows={"AF7": 0, "EXT": 4})
+    assert electrodes_of(session)[1].about == (
+        "EXT is not one of the standard electrode positions, so nothing general can be said "
+        "about it."
     )
 
 
@@ -94,7 +101,7 @@ def test_every_muse_takes_fpz_as_its_reference(copied):
 
 
 def test_the_electrodes_of_muse_and_its_reference_are_written_out():
-    assert set(WRITTEN) == {*MUSE, MUSE_REFERENCE}
+    assert set(WRITTEN) == {*MUSE, MUSE_REFERENCE, *AUXILIARY_NAMES}
     for name, text in WRITTEN.items():
         assert about(name) == text and text.startswith(f"{name} ")
 

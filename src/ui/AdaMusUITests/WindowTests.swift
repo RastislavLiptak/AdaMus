@@ -9,14 +9,18 @@ import XCTest
 @MainActor
 class WindowTests: XCTestCase {
     let app = XCUIApplication()
-    /// The longest a step of the program takes here: a session over a recording runs to its end,
-    /// paced to take about 40 s (tests/support/stand_in_program.py).
-    let patience: TimeInterval = 90
+    /// The longest a step of the program takes here: a session over a recording runs to its end
+    /// and is analysed in seconds; one with the headset runs until it is stopped
+    /// (tests/support/stand_in_program.py).
+    let patience: TimeInterval = 30
 
     /// Whether each test starts the app anew and closes it at its end; if not, the tests of the
     /// class go on in the app the one before left, brought back to the start (``backToTheStart``),
-    /// and start it anew only once it has gone.
+    /// and start it anew only once it has gone, and at the first of them.
     class var startsTheAppAnew: Bool { true }
+    /// The classes whose first test has started the app in this run: an app left running before
+    /// it, by a run that was cut short, talks to a program that has gone.
+    private static var launched: Set<ObjectIdentifier> = []
 
     override func setUp() async throws {
         let given = ProcessInfo.processInfo.environment
@@ -25,8 +29,9 @@ class WindowTests: XCTestCase {
         }
         continueAfterFailure = false
         app.launchEnvironment = ["ADAMUS_PROGRAM_ADDRESS": address, "ADAMUS_PROGRAM_TOKEN": token]
-        if Self.startsTheAppAnew || [.notRunning, .unknown].contains(app.state) {
-            app.launch()
+        let first = WindowTests.launched.insert(ObjectIdentifier(Self.self)).inserted
+        if Self.startsTheAppAnew || first || [.notRunning, .unknown].contains(app.state) {
+            app.launch()  // and the app running before ended
         } else {
             app.activate()
             backToTheStart()

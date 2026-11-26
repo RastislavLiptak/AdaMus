@@ -25,6 +25,19 @@ enum Metrics {
     static let lastWords = CGSize(width: 640, height: 240)  // what a program that ended printed
     static let cornerRadius: CGFloat = 8  // of a box of text
 
+    /// The music of a session on its overview: its cover and the sound track of its sample.
+    enum Sample {
+        static let cover: CGFloat = 140
+        static let coverShadow: CGFloat = 6
+        static let playButton: CGFloat = 56  // round, on the middle of the cover
+        static let track: CGFloat = 44
+        static let barShare: CGFloat = 0.6  // of the room of a slice of the sample, its bar's width
+        static let leastBar: CGFloat = 0.08  // a silent slice still shows, this high of the track
+        static let unplayed = 0.38  // how strongly what is still to play shows
+        static let playhead: CGFloat = 2.5
+        static let step = 1.0  // s, the track moved by VoiceOver
+    }
+
     static let summaryColumn: CGFloat = 180  // the narrowest a fact of the overview goes
     static let resultBox: CGFloat = 170  // the narrowest a main result goes
 

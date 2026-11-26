@@ -23,9 +23,15 @@ enum SessionPart: String, CaseIterable, Identifiable {
 final class SessionModel {
     let api: APIClient
     let summary: SessionSummary
+    /// What is shown; as one part is left for another, what it played is paused.
     var part: SessionPart = .overview {
-        didSet { opened.insert(part) }
+        didSet {
+            opened.insert(part)
+            if part != oldValue { pause() }
+        }
     }
+    /// The sample of the session's music, played on its overview.
+    let sample = SamplePlayer()
     /// The parts shown so far: each stays built, so that switching back to one is at once.
     private(set) var opened: Set<SessionPart> = [.overview]
     private(set) var dashboard: Dashboard?
@@ -45,10 +51,17 @@ final class SessionModel {
         ]
     }
 
+    /// Nothing of the session plays: its timeline and the sample of its music are paused.
+    func pause() {
+        timeline?.pause()
+        if sample.playing { sample.pause() }
+    }
+
     /// The session is no longer chosen: nothing more is read, and its music stops.
     func stop() {
         for task in loading { task.cancel() }
         timeline?.stop()
+        sample.stop()
     }
 
     /// The dashboard, read again while the program is still working on it.

@@ -19,7 +19,16 @@ from adamus.detection.focus_detector import load_models
 from adamus.detection.signal_processing import Steps
 from adamus.errors import AdamusError
 from adamus.realtime import session_recorder
-from adamus.session_format import REASON_END_OF_STREAM, REASON_ERROR, REASON_USER, Event, Meta
+from adamus.realtime.chords import voicing
+from adamus.realtime.generator_messages import session_start_messages
+from adamus.session_format import (
+    REASON_END_OF_STREAM,
+    REASON_ERROR,
+    REASON_USER,
+    Event,
+    Meta,
+    read_jsonl,
+)
 from tests.support.finished_sessions import (
     CONTEXT,
     FS,
@@ -36,6 +45,7 @@ from tests.support.short_sessions import (
     IDLE_STYLE,
     SHORT,
     STEPS,
+    STYLE,
     short_session,
 )
 from tests.support.stand_in_devices import (
@@ -49,8 +59,11 @@ from tests.support.synthetic_dataset import write_recording
 class TestSessionFrame:
     def test_events_in_order(self, short):
         kinds = [event["type"] for event in short.events]
-        assert kinds[:8] == ["SESSION_START"] + ["FUDI"] * 6 + ["STREAM_START"]
-        assert kinds[8] == "BLOCK_START"
+        started = len(
+            session_start_messages(config_with().generator, STYLE, short.directory / c.FILE_AUDIO)
+        )
+        assert kinds[: started + 2] == ["SESSION_START", "STREAM_START"] + ["FUDI"] * started
+        assert kinds[started + 2] == "BLOCK_START"
         assert set(kinds) == {
             "SESSION_START", "FUDI", "STREAM_START", "BLOCK_START", "SESSION_END",
         }  # fmt: skip
@@ -63,15 +76,34 @@ class TestSessionFrame:
     def test_generator_messages_of_a_session(self, short):
         audio = short.directory / "audio.wav"
         assert short.session_messages() == [
-            "reset;", f"prompt 0 {IDLE_STYLE} 1.000;", f"prompt 1 {FOCUS_STYLE} 0.000;",
+            "reset;", "cfgmusiccoca 5;", "cfgnotes 5;", f"temperature {STYLE.temperature};",
+            f"topk {STYLE.top_k};", f"prompt 0 {IDLE_STYLE} 1.000;",
+            f"prompt 1 {FOCUS_STYLE} 0.000;", f"volume {STYLE.rest_volume_db:.2f};", "drumless 1;",
             f"rec open {audio};", "rec start;", "bypass 0;", "bypass 1;", "rec stop;",
         ]  # fmt: skip
-        sent = [m.strip() for m in short.generator.messages if m.count("prompt") != 2]
-        assert sent == short.session_messages()  # what is logged is what was sent
 
-    def test_stream_starts_only_after_the_generator_was_woken_up(self, short):
-        assert short.generator.messages[5] == "bypass 0;"
+    def test_everything_the_generator_is_sent_is_recorded_in_its_order(self, short):
+        recorded = read_jsonl(short.directory / c.FILE_GENERATOR)
+        assert [line["msg"] for line in recorded] == short.generator.messages
+        assert [line["t"] for line in recorded] == sorted(line["t"] for line in recorded)
+        assert recorded[0]["n"] == 0 and recorded[-1]["n"] == 40 * FS
+
+    def test_the_chords_play_from_the_start_of_the_music_to_its_end(self, short):
+        sent = short.generator.messages
+        woken = sent.index("bypass 0;")
+        assert sent[woken + 1] == " ".join(f"noteon {note};" for note in voicing(STYLE.chords[0]))
+        chords = [message for message in sent if "noteon" in message]
+        assert len(chords) >= 2  # it moved on to the next chord
+        held = [int(m.split()[1].rstrip(";")) for m in chords[-1].split("; ") if "noteon" in m]
+        let_go = sent[sent.index("bypass 1;") - 1]
+        assert let_go == " ".join(f"noteoff {note};" for note in held)  # nothing left held
+
+    def test_the_music_starts_only_once_the_stream_has_started(self, short):
+        """Opening a headset can take a while; the music must not play meanwhile."""
         (stream,) = short.events_of("STREAM_START")
+        first_sent = short.events_of("FUDI")[0]
+        assert stream["t"] <= first_sent["t"]
+        assert short.events.index(stream) < short.events.index(first_sent)
         assert (stream["board_id"], stream["fs"], stream["n"]) == (38, 256, 0)
 
     def test_pd_stderr_is_copied_to_the_session_only_while_it_runs(self, short):
@@ -118,9 +150,17 @@ class TestSessionFrame:
     def test_folder_holds_every_file_adamus_writes(self, short):
         assert {path.name for path in short.directory.iterdir()} == {
             "config.yaml", "focus_model.json", "meta.json", "raw.csv", "filtered.f32",
-            "ticks.jsonl", "events.jsonl", "adamus.log",
+            "ticks.jsonl", "events.jsonl", "generator.jsonl", "adamus.log",
+            "sample.wav", "cover.png",
         }  # fmt: skip
         assert short.directory.name.endswith("_S01")
+
+    def test_the_session_keeps_the_sample_and_the_cover_of_its_style(self, short):
+        """Its own copies: the session is shown as it was played, whatever the program ships
+        later."""
+        for name in (c.FILE_SAMPLE, c.FILE_COVER):
+            shipped = c.STYLE_FILES / STYLE.id / name
+            assert (short.directory / name).read_bytes() == shipped.read_bytes(), name
         assert "DEBUG" in (short.directory / c.FILE_LOG).read_text()
 
     def test_model_copy_is_the_model_the_detector_ran_with(self, short):
@@ -162,9 +202,10 @@ class TestSessionFrame:
     ):
         session = short_session(tmp_path, stop_after_steps=0)
         assert session.result.reason == REASON_USER
-        assert [event["type"] for event in session.events][-4:] == [
-            "STREAM_START", "FUDI", "FUDI", "SESSION_END",
-        ]  # fmt: skip
+        kinds = [event["type"] for event in session.events]
+        assert kinds[:2] == ["SESSION_START", "STREAM_START"]
+        assert kinds[-3:] == ["FUDI", "FUDI", "SESSION_END"]  # the music started, then ended
+        assert set(kinds) == {"SESSION_START", "STREAM_START", "FUDI", "SESSION_END"}
         assert session.ticks == [] and session.source.stopped
 
 
@@ -190,10 +231,12 @@ class TestEndings:
     def test_playback_ends_when_no_sample_arrived_for_the_stream_timeout(self, tmp_path):
         config = config_with(SHORT, timeouts={"stream_s": 2})
         session = FinishedSession(tmp_path, config, synthetic_matrix(SHORT)[:, : 6 * FS])
-        duration = session.events[-1]["t"] - session.events_of("STREAM_START")[0]["t"]
-        # 6 s of samples arrive in 24 polls of 64 samples; then 2 s without any.
-        assert duration == pytest.approx(24 * 0.05 + 2.0, abs=0.01)  # not one poll more
-        assert session.result.reason == REASON_END_OF_STREAM
+        last_samples = session.ticks[-1]["t_proc_start"]  # processed as they arrived
+        (end,) = session.events_of("SESSION_END")
+        (stop,) = [e for e in session.events_of("FUDI") if e["msg"] == "bypass 1;"]
+        waited = stop["t"] - last_samples
+        assert 2.0 <= waited <= 2.0 + config.poll_s + 0.01  # not one poll more
+        assert session.result.reason == REASON_END_OF_STREAM and end["t"] >= stop["t"]
 
     def test_live_headset_that_stops_sending_is_an_error(self, tmp_path):
         session = short_session(tmp_path, synthetic_matrix(SHORT)[:, : 6 * FS], live=True)
@@ -374,14 +417,11 @@ class TestEndings:
         session = short_session(tmp_path, None, source=Broken(synthetic_matrix(SHORT)))
         assert session.result.reason == REASON_ERROR
         assert session.error == "cannot start the EEG stream: BOARD_NOT_READY"
-        assert [e["type"] for e in session.events if e["type"] != "FUDI"] == [
-            "SESSION_START",
-            "ERROR",
-            "SESSION_END",
-        ]
+        assert [e["type"] for e in session.events] == ["SESSION_START", "ERROR", "SESSION_END"]
         assert session.events_of("ERROR")[0]["where"] == "source"
         assert session.ticks == [] and not session.source.stopped
-        assert session.session_messages()[-2:] == ["bypass 1;", "rec stop;"]
+        assert session.session_messages() == []  # the music never started
+        assert session.generator.output_copies == []
 
     def test_failure_to_write_the_record_is_an_error_too(self, tmp_path, monkeypatch):
         def disk_full(self, meta):
@@ -427,7 +467,7 @@ class TestEndings:
         assert session.result.reason == REASON_ERROR
         (error,) = session.events_of("ERROR")
         assert (error["where"], error["message"]) == ("generator", "cannot send to Pd: broken pipe")
-        assert session.ticks == [] and session.source.raw_csv is None  # the stream never started
+        assert session.ticks == [] and session.source.stopped  # the stream had started first
 
     def test_recording_without_a_single_sample_ends_as_end_of_stream(self, tmp_path):
         session = short_session(tmp_path, synthetic_matrix(SHORT)[:, :0])

@@ -135,6 +135,19 @@ def parse(text: str) -> tuple[list[list[str]], str]:
     return messages, text[rest_from:]
 
 
+# What mrt2~ takes without a word: the settings of a style, the volume, drums, the notes held.
+SILENT_SETTINGS = ("cfgmusiccoca", "cfgnotes", "temperature", "topk", "volume", "drumless",
+                   "noteon", "noteoff")  # fmt: skip
+
+
+def said_to(head: str, args: list[str]) -> str:
+    """What mrt2~ prints when it is reset, or told how much audio to keep ready."""
+    if head == "reset":
+        return "mrt2~: state reset."
+    samples = int(args[0])
+    return f"mrt2~: buffer size = {samples} samples ({samples * 1000 / RATE:.1f} ms @ 48 kHz)"
+
+
 def handle(atoms: list[str], recorder: Recorder) -> None:
     if not atoms:
         return
@@ -144,11 +157,8 @@ def handle(atoms: list[str], recorder: Recorder) -> None:
         answer_load(head, args[0])
     elif head == "bypass":
         recorder.bypass = {"0": False, "1": True}[args[0]]  # nothing else is ever sent
-    elif head == "reset":
-        log("mrt2~: state reset.")
-    elif head == "buffersize":
-        samples = int(args[0])
-        log(f"mrt2~: buffer size = {samples} samples ({samples * 1000 / RATE:.1f} ms @ 48 kHz)")
+    elif head in ("reset", "buffersize"):
+        log(said_to(head, args))
     elif head == "prompt":
         if int(float(args[0])) == 1:
             recorder.focus = float(args[-1])
@@ -157,6 +167,8 @@ def handle(atoms: list[str], recorder: Recorder) -> None:
     elif head == "rec":
         actions = {"open": recorder.open, "start": recorder.start, "stop": recorder.stop}
         actions[args[0]](*args[1:])
+    elif head in SILENT_SETTINGS:
+        float(args[0])  # a number, or the stand-in fails as Pd would not
     else:
         log(f"error: mrt2~: no method for '{head}'")
 

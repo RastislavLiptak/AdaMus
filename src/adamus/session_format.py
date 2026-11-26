@@ -83,6 +83,14 @@ class Event(EventFields):
     type: str
 
 
+class GeneratorMessage(TypedDict):
+    """One line of generator.jsonl: what the music generator was sent, at once."""
+
+    t: float
+    n: int  # samples received so far
+    msg: str  # one or more FUDI messages
+
+
 class SessionFacts(TypedDict):
     """What a session ran on: its source, its detector and its generator."""
 

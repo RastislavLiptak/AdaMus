@@ -1,13 +1,16 @@
 // The overview of a session: what it is first, when, how long and on what it ran and how it
 // ended, the result marked as it went; what bears on how its results are read; then its main
 // results, as large as they matter (HIG "Charting data": the macro level first, the details on
-// a page of their own); then the electrodes on the head. Lazy: only what is in view is laid out, as a sliding sidebar makes its
+// a page of their own); then its music, and the electrodes on the head. Lazy: only what is in view is laid out, as a sliding sidebar makes its
 // text wrap again in every frame.
 import SwiftUI
 
 struct OverviewView: View {
     let dashboard: Dashboard
     let electrodes: ElectrodeSet?
+    /// Where the sample and the cover of the session's music are.
+    let music: (sample: URL, cover: URL)
+    let player: SamplePlayer
 
     var body: some View {
         ScrollView {
@@ -23,6 +26,9 @@ struct OverviewView: View {
                     Notice.caution(caution)
                 }
                 Results(highlights: dashboard.highlights)
+                if let found = dashboard.music {
+                    MusicBox(music: found, sample: music.sample, cover: music.cover, player: player)
+                }
                 if let electrodes, !electrodes.placed.isEmpty {
                     ElectrodesBox(set: electrodes)
                 }
@@ -98,20 +104,28 @@ struct Summary: View {
             ],
             alignment: .leading, spacing: Metrics.Spacing.regular
         ) {
-            ForEach(facts, id: \.self) { fact in
-                VStack(alignment: .leading, spacing: Metrics.Spacing.line) {
-                    Text(fact.label).font(.caption).foregroundStyle(.secondary)
-                    let value = ValueFormatting.text(fact.value)
-                    if let status = fact.status {
-                        Label(value, systemImage: status.systemName).foregroundStyle(status.color)
-                    } else {
-                        Text(value).textSelection(.enabled)
-                    }
-                }
-                .fontWeight(.medium)
-                .accessibilityElement(children: .combine)
+            ForEach(facts, id: \.self) { FactView(fact: $0) }
+        }
+    }
+}
+
+/// A fact: its name small over its value; one that tells how the session went with its symbol,
+/// in its colour.
+struct FactView: View {
+    let fact: Fact
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Metrics.Spacing.line) {
+            Text(fact.label).font(.caption).foregroundStyle(.secondary)
+            let value = ValueFormatting.text(fact.value)
+            if let status = fact.status {
+                Label(value, systemImage: status.systemName).foregroundStyle(status.color)
+            } else {
+                Text(value).textSelection(.enabled)
             }
         }
+        .fontWeight(.medium)
+        .accessibilityElement(children: .combine)
     }
 }
 

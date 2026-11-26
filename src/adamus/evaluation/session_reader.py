@@ -20,6 +20,7 @@ from adamus.session_format import (
     EVENT_FUDI,
     RAW_SEPARATOR,
     Event,
+    GeneratorMessage,
     Meta,
     Tick,
     read_json,
@@ -71,6 +72,13 @@ class SessionFolder:
             if event["type"] == EVENT_FUDI and event.get("msg") == message.strip():
                 return float(event["t"])
         return None
+
+    @property
+    def generator_messages(self) -> list[GeneratorMessage]:
+        """Every message the music generator was sent; none of a session from before they were
+        recorded."""
+        path = self.directory / c.FILE_GENERATOR
+        return read_jsonl(path) if path.is_file() else []
 
     def controlled_ticks(self) -> list[Tick]:
         """Valid steps: the steps that set a new f."""

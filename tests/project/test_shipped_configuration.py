@@ -7,7 +7,10 @@ number is noticed here and not in the laboratory.
 
 import re
 import tomllib
+from pathlib import Path
 
+import pytest
+import soundfile
 from brainflow.board_shim import BoardShim
 
 import adamus
@@ -42,9 +45,42 @@ class TestDetector:
     def test_the_focus_model_is_not_shipped_the_program_trains_it(self):
         assert PROJECT["tool"]["setuptools"]["package-data"] == {
             "adamus.realtime": ["pure_data_patch.pd"],
-            "adamus.server": ["head_model.json"],  # the head the electrodes are drawn on
+            "adamus.server": ["head_model.json", "styles/*/*"],  # the head; the styles' files
         }
         assert not list((ROOT / "src").rglob(c.FOCUS_MODEL_FILE))
+
+
+def png_size(path):
+    """Width and height of a PNG, from its header."""
+    data = path.read_bytes()
+    assert data[:8] == b"\x89PNG\r\n\x1a\n" and data[12:16] == b"IHDR"
+    return int.from_bytes(data[16:20]), int.from_bytes(data[20:24])
+
+
+class TestStyles:
+    def test_every_style_has_a_folder_of_a_sample_and_a_cover_and_nothing_else_lies_there(self):
+        shipped = sorted(path.relative_to(c.STYLE_FILES) for path in c.STYLE_FILES.rglob("*"))
+        expected = sorted(
+            path
+            for style in CONFIG.styles
+            for path in (
+                Path(style.id),
+                Path(style.id, c.FILE_SAMPLE),
+                Path(style.id, c.FILE_COVER),
+            )
+        )
+        assert shipped == expected
+
+    def test_a_sample_is_the_rest_then_the_focus_and_a_cover_a_square_picture(self):
+        for style in CONFIG.styles:
+            sample = soundfile.info(c.STYLE_FILES / style.id / c.FILE_SAMPLE)
+            # its rest, then its focus: the samples were recorded so, with these settings
+            assert sample.duration == pytest.approx(2 * c.SAMPLE_FOCUS_FROM_S, abs=0.1), style.id
+            assert png_size(c.STYLE_FILES / style.id / c.FILE_COVER) == (512, 512), style.id
+
+    def test_the_focus_is_never_quieter_than_the_rest(self):
+        for style in CONFIG.styles:
+            assert style.rest_volume_db <= style.focus_volume_db, style.id
 
 
 class TestTiming:

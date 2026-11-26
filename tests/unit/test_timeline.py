@@ -115,10 +115,10 @@ def test_the_music_begins_when_the_generator_started_recording(tracks, played):
     raw = np.loadtxt(played.directory / c.FILE_RAW, delimiter="\t", ndmin=2).T
     meta = json.loads((played.directory / c.FILE_META).read_text())
     music = by_id(tracks)["music"]
-    assert music.start_s == pytest.approx(rec_start - raw[meta["timestamp_row"]][0])
-    assert music.start_s < 0  # the recording begins before the stream
+    assert music.start_s == pytest.approx(rec_start - raw[meta["timestamp_row"]][0], abs=1e-6)
+    assert music.start_s >= 0  # the music begins once the stream has
     assert music.rate_hz == FS and len(tracks.samples["music"]) == 2 * music.buckets
-    assert tracks.timeline.start_s == music.start_s
+    assert tracks.timeline.start_s == 0.0  # the first sample
     sound = soundfile.info(played.directory / c.FILE_AUDIO)
     assert music.duration_s == pytest.approx(sound.frames / sound.samplerate)
 
@@ -423,6 +423,36 @@ def test_every_event_lies_at_the_samples_received_when_it_happened_as_a_console_
     block = next(line.text for line in lines if line.text.startswith("BLOCK_START"))
     assert block == "BLOCK_START index=0 label=REST marker=1"  # what it holds, field by field
     assert {line.severity for line in lines} == {"info"}
+
+
+def test_the_timeline_of_a_session_whose_music_began_before_its_stream_begins_with_the_music(
+    copied,
+):
+    """As sessions from before the music waited for the stream."""
+    events = read_jsonl(copied / c.FILE_EVENTS)
+    for event in events:
+        if event["type"] == "FUDI":
+            event["t"] -= 3.0
+    (copied / c.FILE_EVENTS).write_text("".join(json.dumps(e) + "\n" for e in events))
+    tracks = session_tracks(copied)
+    music = by_id(tracks)["music"]
+    assert music.start_s == pytest.approx(-3.0, abs=0.01)
+    assert tracks.timeline.start_s == music.start_s
+
+
+def test_everything_the_generator_was_sent_lies_at_the_samples_received_when_it_was_sent(
+    tracks, played
+):
+    lines = console(tracks, "Generator")
+    sent = read_jsonl(played.directory / c.FILE_GENERATOR)
+    assert [(line.time_s, line.text) for line in lines] == [(s["n"] / FS, s["msg"]) for s in sent]
+    assert any(line.text.startswith("noteon") for line in lines)  # the chords too
+    assert {line.severity for line in lines} == {"info"}
+
+
+def test_a_session_from_before_the_generator_was_recorded_shows_nothing_it_was_sent(copied):
+    (copied / c.FILE_GENERATOR).unlink()
+    assert console(session_tracks(copied), "Generator") == []
 
 
 def test_an_error_of_the_session_is_an_error_line_that_says_what_went_wrong(copied):

@@ -12,15 +12,18 @@ from adamus.activity_log import ACTION_SESSION_STARTED, ACTION_START_FAILED
 from adamus.config import parse_protocol
 from adamus.evaluation.session_reader import load_session_folder
 from adamus.evaluation.session_statistics import statistics_of
+from adamus.server.api_models import Fact
 from adamus.server.dashboard import (
     PENDING,
     dashboard_of,
     highlights_of,
+    music_of,
     start_problem,
     why_unreadable,
 )
 from adamus.server.dashboard_sections import (
     blocks_section,
+    configuration_section,
     ended_by,
     failures_of,
     release,
@@ -29,8 +32,8 @@ from adamus.server.dashboard_sections import (
 from adamus.session_format import read_jsonl
 
 SECTIONS = [
-    "Run", "Blocks", "Detection", "Signal", "Music", "Processing", "Configuration", "Software",
-    "Activity",
+    "Run", "Blocks", "Detection", "Signal", "Music", "Processing", "Configuration",
+    "Software", "Activity",
 ]  # fmt: skip
 
 
@@ -93,7 +96,7 @@ DETAILS = {
     ],
     "Configuration": [
         "Headset", "BrainFlow Board", "Headset Serial Number", "Generator Folder", "Music Model",
-        "Music at Rest", "Music in Focus", "Stream Timeout", "Pure Data Connection Timeout",
+        "Style Guidance", "Note Guidance", "Stream Timeout", "Pure Data Connection Timeout",
         "Model Load Timeout", "Poll Interval",
     ],
 }  # fmt: skip
@@ -263,14 +266,12 @@ def test_the_configuration_and_the_software_the_session_ran_with(dashboard, play
     configuration = facts(dashboard, "Configuration")
     assert configuration["Headset"] == ("Muse 2", "text")
     assert configuration["Headset Serial Number"] == ("The first one found", "text")
-    ran_with = yaml.safe_load((played.directory / c.FILE_CONFIG).read_text())["generator"]
-    assert configuration["Music at Rest"] == (ran_with["prompt_idle"], "text")
     assert configuration["BrainFlow Board"] == ("38", "text")  # a name, not grouped by thousands
     assert configuration["Stream Timeout"][1] == "duration"
     settings = yaml.safe_load((played.directory / c.FILE_CONFIG).read_text())
-    del settings["protocol"]
+    del settings["protocol"], settings["styles"]
     leaves = sum(len(part) if isinstance(part, dict) else 1 for part in settings.values())
-    assert len(configuration) == leaves  # every setting, the protocol in the blocks instead
+    assert len(configuration) == leaves  # every setting; the protocol and the style elsewhere
     software = facts(dashboard, "Software")
     assert software["Pure Data"] == ("0.0", "text")  # the release of what Pd says: Pd-0.0-stand-in
     assert "Focus Model Trained On" not in software  # in the overview
@@ -465,6 +466,80 @@ def test_a_recording_of_a_person_the_focus_model_learned_from_is_cautioned_of(co
     assert caution_of_playing(None) is None  # the recording does not say whose it is
     (recording / c.FILE_DATASET_PROTOCOL).unlink()
     assert dashboard_of(copied, None, False).caution is None  # nor is it there any more
+
+
+def test_the_overview_has_the_music_the_session_played_with_every_setting_of_it(dashboard, played):
+    style = yaml.safe_load((played.directory / c.FILE_CONFIG).read_text())["styles"][0]
+    music = dashboard.music
+    assert music is not None and music.title == style["name"]
+    assert "Music" not in summary(dashboard)  # the music has its own box, under the results
+    rest, focus = music.parts
+    assert (rest.title, rest.prompt, rest.colour, rest.from_s) == (
+        "At Rest",
+        style["rest"],
+        "indigo",
+        0.0,
+    )
+    assert (focus.title, focus.prompt, focus.colour, focus.from_s) == (
+        "In Focus",
+        style["focus"],
+        "orange",
+        c.SAMPLE_FOCUS_FROM_S,
+    )
+    assert rest.sound == f"{style['rest_volume_db']:+g} dB · Full chords · No drums".replace(
+        "-", "−"
+    )
+    shown = {item.label: (item.value.value, item.value.format) for item in music.facts}
+    assert shown == {
+        "Tempo": (f"{style['tempo_bpm']} BPM", "text"),
+        "Chords, One a Bar": (" ".join(style["chords"]), "text"),
+        "Gap Between Chords": (style["chord_gap_s"], "duration"),
+        "Temperature": (style["temperature"], "decimal"),
+        "Top K": (style["top_k"], "count"),
+    }
+
+
+def test_the_loudness_of_the_sample_the_session_kept_along_it(dashboard):
+    """Of the session's own copy, which stays as it was played, whatever the program ships."""
+    music = dashboard.music
+    assert music is not None and music.length_s == pytest.approx(20, abs=0.1)
+    assert len(music.loudness) == 160 and max(music.loudness) == 1 and min(music.loudness) >= 0
+    half = len(music.loudness) // 2
+    assert sum(music.loudness[half:]) > sum(music.loudness[:half])  # louder in focus
+
+
+def test_a_session_that_kept_no_sample_has_no_music_on_its_overview(copied):
+    (copied / c.FILE_SAMPLE).unlink()
+    assert dashboard_of(copied, None, False).music is None
+
+
+@pytest.mark.parametrize(
+    ("changes", "sound"),
+    [({"focus_power_chords": True, "focus_drums": False}, "+2 dB · Power chords · No drums"),
+     ({"focus_power_chords": False, "focus_drums": True}, "+2 dB · Full chords · Drums")],
+)  # fmt: skip
+def test_whether_power_chords_and_drums_come_in_focus(played, changes, sound):
+    session = load_session_folder(played.directory)
+    style = {**session.settings["styles"][0], **changes, "focus_volume_db": 2}
+    music = music_of(replace(session, settings={**session.settings, "styles": [style]}))
+    assert music is not None and music.parts[1].sound == sound
+
+
+def test_a_session_from_before_styles_shows_its_two_texts_among_its_settings(played):
+    session = load_session_folder(played.directory)
+    old = {key: part for key, part in session.settings.items() if key != "styles"}
+    old["generator"] = {**old["generator"], "prompt_idle": "quiet slow solo piano",
+                        "prompt_focus": "fast loud piano concerto"}  # fmt: skip
+    session = replace(session, settings=old)
+    assert music_of(session) is None
+    shown = {
+        item.label: item.value.value
+        for item in configuration_section(session).items
+        if isinstance(item, Fact)
+    }
+    assert (shown["Music at Rest"], shown["Music in Focus"]) == (
+        "quiet slow solo piano", "fast loud piano concerto",
+    )  # fmt: skip
 
 
 @pytest.mark.parametrize(

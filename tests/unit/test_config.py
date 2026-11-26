@@ -2,22 +2,26 @@
 
 import copy
 import math
+from dataclasses import fields
 
 import pytest
 
 from adamus.config import (
     Block,
+    Style,
     is_style_text,
     load_config,
     parse_config,
     parse_protocol,
     read_yaml,
+    with_style,
     write_yaml,
 )
 from adamus.errors import AdamusError
 from tests.support.project_paths import CONFIG_FILE
 
-SHIPPED_IDLE = read_yaml(CONFIG_FILE)["generator"]["prompt_idle"]
+STYLE_KEYS = [field.name for field in fields(Style)]
+CHORDS_PROBLEM = "chords: at least one, each a root A to G, then nothing, m, 7, m7, maj7 or 5"
 
 
 class TestRepositoryConfiguration:
@@ -38,11 +42,20 @@ class TestRepositoryConfiguration:
     def test_generator(self, config):
         generator = config.generator
         assert (generator.folder, generator.model) == ("models/music_generator", "mrt2_small")
-        assert generator.prompt_idle == "quiet slow solo piano"
-        assert (
-            generator.prompt_focus
-            == "fast loud piano concerto with full symphony orchestra brass and timpani"
-        )
+
+    def test_the_styles_in_their_order(self, config):
+        assert [(style.id, style.name) for style in config.styles] == [
+            ("folk", "Folk"), ("rock", "Rock"), ("country", "Country"),
+            ("koto", "Koto and Taiko"), ("oud", "Oud and Darbuka"),
+        ]  # fmt: skip
+
+    def test_the_rock_plays_power_chords_without_a_gap_and_some_styles_drums(self, config):
+        by_id = {style.id: style for style in config.styles}
+        assert by_id["rock"].focus_power_chords and by_id["rock"].chord_gap_s == 0
+        assert not any(style.focus_power_chords for style in config.styles if style.id != "rock")
+        assert {style.id for style in config.styles if style.focus_drums} == {
+            "country", "koto", "oud"
+        }  # fmt: skip
 
     def test_raw_mapping_is_kept_for_the_session_copy(self, config, raw_config):
         assert config.raw == raw_config
@@ -115,8 +128,8 @@ class TestStructure:
         "path",
         [
             "board.name", "board.id", "board.serial_number", "generator.folder", "generator.model",
-            "generator.prompt_idle", "generator.prompt_focus",
-            "timeouts.stream_s", "timeouts.pd_connect_s", "timeouts.model_load_s",
+            "generator.style_guidance", "generator.note_guidance", "timeouts.stream_s",
+            "timeouts.pd_connect_s", "timeouts.model_load_s",
         ],
     )  # fmt: skip
     def test_every_key_is_required(self, raw_config, path):
@@ -173,7 +186,6 @@ class TestTypes:
             ("board", "serial_number", 5), ("board", "name", 2),
             ("generator", "folder", None),
             ("generator", "model", 2),
-            ("generator", "prompt_idle", 7),
             ("timeouts", "stream_s", "5"), ("timeouts", "model_load_s", [120]),
         ],
     )  # fmt: skip
@@ -217,12 +229,6 @@ class TestRanges:
             ("generator", "model", "models/mrt2_small.mlxfn",
              "generator.model: must be the name of a model, not a path"),
             ("generator", "model", "", "generator.model: must be the name of a model, not a path"),
-            ("generator", "prompt_focus", SHIPPED_IDLE,  # the same as prompt_idle
-             "generator.prompt_idle, prompt_focus: must be two different styles"),
-            ("generator", "prompt_idle", "disco 80",
-             "generator.prompt_idle: not a valid style text"),
-            ("generator", "prompt_focus", "Disco",
-             "generator.prompt_focus: not a valid style text"),
             ("timeouts", "stream_s", 0, "timeouts: every timeout must be positive"),
             ("timeouts", "pd_connect_s", -1, "timeouts: every timeout must be positive"),
             ("timeouts", "model_load_s", 0, "timeouts: every timeout must be positive"),
@@ -309,6 +315,123 @@ class TestProtocol:
     def test_invalid_protocols(self, raw_config, protocol, problems):
         raw_config["protocol"] = protocol
         assert problems_of(raw_config) == problems
+
+
+class TestStyles:
+    @pytest.mark.parametrize("styles", [None, [], "folk", {"id": "folk"}])
+    def test_a_non_empty_list_of_styles_is_required(self, raw_config, styles):
+        raw_config["styles"] = styles
+        assert problems_of(raw_config) == ["styles: expected a non-empty list of styles"]
+
+    @pytest.mark.parametrize("key", STYLE_KEYS)
+    def test_every_key_of_a_style_is_required(self, raw_config, key):
+        del raw_config["styles"][1][key]
+        assert problems_of(raw_config) == [f"styles[1].{key}: missing"]
+
+    def test_a_style_that_is_no_mapping_and_unknown_keys_are_reported(self, raw_config):
+        raw_config["styles"][0] = "folk"
+        raw_config["styles"][2]["colour"] = "red"
+        assert problems_of(raw_config) == [
+            "styles[0]: missing or not a mapping",
+            "styles[2].colour: unknown key",
+        ]
+
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            ("tempo_bpm", "100"),
+            ("chords", "C F"),
+            ("chords", ["C", 7]),
+            ("focus_drums", "yes"),
+            ("focus_power_chords", 1),
+            ("top_k", 40.0),
+            ("rest", None),
+            ("rest_volume_db", True),
+        ],
+    )
+    def test_wrong_type_is_reported_with_the_value(self, raw_config, key, value):
+        raw_config["styles"][0][key] = value
+        assert problems_of(raw_config) == [f"styles[0].{key}: wrong type, got {value!r}"]
+
+    @pytest.mark.parametrize(
+        ("changes", "problem"),
+        [
+            ({"id": "Folk"}, "id: lower-case letters only"),
+            ({"id": ""}, "id: lower-case letters only"),
+            ({"id": "folk2"}, "id: lower-case letters only"),
+            ({"name": " "}, "name: must not be empty"),
+            ({"rest": "Disco"}, "rest: not a valid style text"),
+            ({"focus": "disco 80"}, "focus: not a valid style text"),
+            (
+                {"focus": "instrumental folk with soft acoustic guitar picking"},
+                "rest, focus: must be two different styles",
+            ),
+            ({"tempo_bpm": 0}, "tempo_bpm: above 0, at most 300"),
+            ({"tempo_bpm": 301}, "tempo_bpm: above 0, at most 300"),
+            ({"chords": []}, CHORDS_PROBLEM),
+            ({"chords": ["H"]}, CHORDS_PROBLEM),
+            ({"chords": ["C", "Cm9"]}, CHORDS_PROBLEM),
+            ({"chords": ["c"]}, CHORDS_PROBLEM),
+            ({"chord_gap_s": -0.01}, "chord_gap_s: from 0, shorter than a bar"),
+            ({"chord_gap_s": 2.4}, "chord_gap_s: from 0, shorter than a bar"),  # a bar at 100 BPM
+            ({"rest_volume_db": 2.1}, ": volumes at most 2 dB"),
+            ({"focus_volume_db": 6}, ": volumes at most 2 dB"),
+            ({"temperature": 0}, "temperature: must be positive"),
+            ({"top_k": 0}, "top_k: at least 1"),
+        ],
+    )
+    def test_value_out_of_range(self, raw_config, changes, problem):
+        raw_config["styles"][0].update(changes)
+        separator = "" if problem.startswith(":") else "."
+        assert problems_of(raw_config) == [f"styles[0]{separator}{problem}"]
+
+    @pytest.mark.parametrize(
+        "changes",
+        [
+            {"tempo_bpm": 0.5},
+            {"chords": ["C", "Dm", "E7", "Fm7", "Gmaj7", "A5", "B"] * 4},
+            {"chord_gap_s": 0},
+            {"chord_gap_s": 2.39},
+            {"rest_volume_db": -60, "focus_volume_db": 2},
+            {"temperature": 0.01},
+            {"top_k": 1},
+            {"name": "Lo-fi, at Night", "about": ""},
+        ],
+    )
+    def test_values_on_the_boundary_are_accepted(self, raw_config, changes):
+        raw_config["styles"][0].update(changes)
+        style = parse_config(raw_config).styles[0]
+        assert all(getattr(style, key) == value for key, value in changes.items())
+
+    @pytest.mark.parametrize(
+        ("key", "problem"),
+        [("id", "styles: every id must differ"), ("name", "styles: every name must differ")],
+    )
+    def test_two_styles_cannot_share_an_id_or_a_name(self, raw_config, key, problem):
+        raw_config["styles"][3][key] = raw_config["styles"][1][key]
+        assert problems_of(raw_config) == [problem]
+
+    @pytest.mark.parametrize("key", ["style_guidance", "note_guidance"])
+    def test_guidance_must_be_positive(self, raw_config, key):
+        raw_config["generator"][key] = 0
+        assert problems_of(raw_config) == ["generator: guidance must be positive"]
+
+    def test_the_style_of_a_configuration_is_its_first(self, config):
+        assert config.style == config.styles[0]
+
+    def test_a_session_gets_the_style_chosen_as_its_only_one(self, config):
+        played = with_style(config, "koto")
+        assert played.styles == [style for style in config.styles if style.id == "koto"]
+        assert played.style.id == "koto"
+        assert played.raw["styles"] == [
+            style for style in config.raw["styles"] if style["id"] == "koto"
+        ]
+        assert {**played.raw, "styles": config.raw["styles"]} == config.raw  # all else as it was
+        assert len(config.styles) == 5  # the configuration of the program keeps every style
+
+    def test_a_style_that_is_not_there_cannot_be_chosen(self, config):
+        with pytest.raises(AdamusError, match="^jazz: no such style$"):
+            with_style(config, "jazz")
 
 
 def test_section_must_be_a_mapping(raw_config):

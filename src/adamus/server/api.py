@@ -1,9 +1,12 @@
 """The API the app works through.
 
 It answers on the local computer only. Every call carries the token the app was told when
-the program started (a header, or for the player of a sound a query parameter), so that a
-program that was not given the token (of another user, or a web page in a browser) cannot
-delete sessions or start one.
+the program started (a header, or for a sound and a cover, which a player and an image ask for
+without a header, a query parameter), so that a program that was not given the token (of another
+user, or a web page in a browser) cannot delete sessions or start one.
+
+Each style of music has a sample, which the form plays (constants.STYLE_FILES); a session keeps
+a copy of it and of the style's cover, which its overview shows.
 """
 
 import secrets
@@ -47,8 +50,10 @@ ACCEPTED, NO_CONTENT = 202, 204  # HTTP status codes of success
 NOT_FOUND, CONFLICT, INVALID = 404, 409, 422  # and of failure
 MAX_PAGE = 1000  # sessions on one page of the list, at most
 BINARY = "application/octet-stream"
-SOUND = "/sound"  # the end of the address of the sound of a track
+SOUND = "/sound"  # the end of the address of a sound: of a track, of a sample
+COVER = "/cover"  # the end of the address of the cover of a session's music
 AUDIO = "audio/wav"
+COVER_TYPE = "image/png"
 
 
 class TrackCache:
@@ -97,9 +102,9 @@ def authorized(
     header: Annotated[str | None, Header(alias=TOKEN_HEADER)] = None,
     token: Annotated[str | None, Query()] = None,
 ) -> None:
-    """Every call carries the token in its header; a call without it finds nothing. Only the
-    sound carries it in its address, as the player that asks for it sends no header."""
-    in_address = token if request.url.path.endswith(SOUND) else None
+    """Every call carries the token in its header; a call without it finds nothing. Only a
+    sound and a cover carry it in their address, as what asks for them sends no header."""
+    in_address = token if request.url.path.endswith((SOUND, COVER)) else None
     given = (header or in_address or "").encode()  # compare_digest takes text in ASCII only
     if not secrets.compare_digest(given, services.token.encode()):
         raise HTTPException(NOT_FOUND)
@@ -118,6 +123,7 @@ def create_api() -> FastAPI:
     add_excerpt_route(api)
     add_electrode_routes(api)
     add_new_session_routes(api)
+    add_style_routes(api)
     add_run_routes(api)
     return api
 
@@ -188,6 +194,21 @@ def add_session_routes(api: FastAPI) -> None:
         if kinds.get(track_id) != "audio" or not path.is_file():
             raise HTTPException(NOT_FOUND, f"no sound of {track_id}")
         return FileResponse(path, media_type=AUDIO)
+
+    @api.get("/api/sessions/{session_id}/music" + SOUND)
+    def music_sample(services: Using, session_id: str) -> FileResponse:
+        return kept_file(folder_of(services, session_id) / c.FILE_SAMPLE, AUDIO)
+
+    @api.get("/api/sessions/{session_id}/music" + COVER)
+    def music_cover(services: Using, session_id: str) -> FileResponse:
+        return kept_file(folder_of(services, session_id) / c.FILE_COVER, COVER_TYPE)
+
+
+def kept_file(path: Path, media_type: str) -> FileResponse:
+    """A file of the style a session played, which a session from before styles has not."""
+    if not path.is_file():
+        raise HTTPException(NOT_FOUND, f"no {path.name}")
+    return FileResponse(path, media_type=media_type)
 
 
 def add_change_routes(api: FastAPI) -> None:
@@ -280,6 +301,17 @@ def add_new_session_routes(api: FastAPI) -> None:
             return services.new_session.audio_outputs()
         except AdamusError as problem:
             raise HTTPException(INVALID, str(problem)) from problem
+
+
+def add_style_routes(api: FastAPI) -> None:
+    """A sample of a style of music, to be played."""
+
+    @api.get("/api/styles/{style_id}" + SOUND)
+    def sample(services: Using, style_id: str) -> FileResponse:
+        path = c.STYLE_FILES / style_id / c.FILE_SAMPLE
+        if services.new_session.style(style_id) is None or not path.is_file():
+            raise HTTPException(NOT_FOUND, f"no sample of style {style_id}")
+        return FileResponse(path, media_type=AUDIO)
 
 
 def add_run_routes(api: FastAPI) -> None:

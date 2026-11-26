@@ -5,7 +5,8 @@
 # macOS remembers what an app may use (such as the Documents folder the project lies in) by its
 # signature. An app signed by its content alone, as Xcode signs it here, is a new app after
 # every build, and macOS asks again; an app signed with a certificate stays the same app, and
-# macOS asks only once. build_app.sh signs AdaMus.app so, and the tests of the app their builds.
+# macOS asks only once. build_app.sh signs AdaMus.app so; the tests of the app build theirs out of
+# the project folder, where macOS asks nothing.
 #
 # The certificate is signed by itself, so macOS never counts it among the valid identities
 # (`find-identity -v`); whether it is there and has not expired is asked instead.

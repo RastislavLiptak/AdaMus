@@ -15,7 +15,13 @@ from adamus import constants as c
 from adamus.activity_log import ActivityLog
 from adamus.audio_outputs import AudioOutput
 from adamus.evaluation.session_reader import load_session_folder
-from adamus.server.api import MAX_PAGE, TOKEN_HEADER, Services, create_api, create_app
+from adamus.server.api import (
+    MAX_PAGE,
+    TOKEN_HEADER,
+    Services,
+    create_api,
+    create_app,
+)
 from adamus.server.dashboard import PENDING
 from adamus.server.electrodes import electrodes_of, head_model
 from adamus.server.excerpt import excerpt_of
@@ -226,6 +232,42 @@ class TestSessions:
         assert part.status_code == 206 and part.content == whole[100:200]
         assert part.headers["content-type"] == "audio/wav"
 
+    def test_a_style_has_its_sample_which_plays_from_any_point(self, api):
+        part = api.client.get("/api/styles/rock/sound", headers={"Range": "bytes=0-99"})
+        assert part.status_code == 206 and part.headers["content-type"] == "audio/wav"
+        assert part.content == (c.STYLE_FILES / "rock" / c.FILE_SAMPLE).read_bytes()[:100]
+
+    def test_a_sample_takes_the_token_in_its_address_as_a_player_asks(self, api):
+        bare = TestClient(api.client.app)
+        path = "/api/styles/folk/sound"
+        assert bare.get(path).status_code == 404
+        assert bare.get(f"{path}?token=guess").status_code == 404
+        assert bare.get(f"{path}?token={TOKEN}").status_code == 200
+        assert bare.get(f"/api/new-session?token={TOKEN}").status_code == 404  # nothing else
+
+    @pytest.mark.parametrize("path", ["jazz/sound", "..%2Fapi/sound", "folk/cover", "folk/notes"])
+    def test_a_style_that_is_not_there_has_no_files(self, api, path):
+        assert api.client.get(f"/api/styles/{path}").status_code == 404
+
+    def test_a_style_whose_file_is_missing_has_none(self, api, monkeypatch, tmp_path):
+        monkeypatch.setattr(c, "STYLE_FILES", tmp_path)
+        assert api.client.get("/api/styles/folk/sound").status_code == 404
+
+    def test_the_music_of_a_session_is_its_own_sample_and_cover_asked_for_as_a_player_would(
+        self, api
+    ):
+        """With the token in their address, as a player and an image ask without a header."""
+        bare, kept = TestClient(api.client.app), api.folder / "sessions" / api.session_id
+        for end, file, kind in [("sound", c.FILE_SAMPLE, "audio/wav"),
+                                ("cover", c.FILE_COVER, "image/png")]:  # fmt: skip
+            path = f"/api/sessions/{api.session_id}/music/{end}"
+            assert bare.get(f"{path}?token=guess").status_code == 404
+            answer = bare.get(f"{path}?token={TOKEN}")
+            assert answer.status_code == 200 and answer.headers["content-type"] == kind
+            assert answer.content == (kept / file).read_bytes()
+            (kept / file).unlink()  # a session from before styles
+            assert api.client.get(path).status_code == 404
+
     @pytest.mark.parametrize("track", ["signal-AF7", "protocol", "nothing"])
     def test_a_track_that_is_no_audio_has_no_sound(self, api, track):
         sound = api.client.get(f"/api/sessions/{api.session_id}/tracks/{track}/sound")
@@ -323,6 +365,7 @@ class TestNewSession:
 
     def test_a_session_is_asked_for_once(self, api):
         request = {
+            "style_id": "folk",
             "source_id": "dataset:synthetic",
             "recording": "short",
             "name": "S02",
@@ -346,12 +389,18 @@ class TestNewSession:
     def test_a_session_with_the_headset_is_asked_for_without_a_recording(self, api):
         """As the app asks: a value it does not have it leaves out."""
         api.client.post("/api/new-session/refresh")  # the headset found
-        request = {"source_id": "headset:Muse 2", "name": "live", "output": SPEAKERS}
+        request = {
+            "style_id": "folk",
+            "source_id": "headset:Muse 2",
+            "name": "live",
+            "output": SPEAKERS,
+        }
         assert api.client.post("/api/run", json=request).status_code == 202
 
     def test_while_the_last_session_is_finished_a_new_one_waits_for_it(self, api):
         api.runner._set("finishing")  # its recording stored, its metrics computed
         request = {
+            "style_id": "folk",
             "source_id": "dataset:synthetic",
             "recording": "short",
             "name": "S02",
@@ -366,6 +415,7 @@ class TestNewSession:
 
     def test_a_request_that_cannot_run_says_why(self, api):
         request = {
+            "style_id": "folk",
             "source_id": "dataset:synthetic",
             "recording": "short",
             "name": "a/b",
@@ -384,6 +434,7 @@ class TestNewSession:
         api.client.post("/api/new-session/refresh")  # found
         api.runner._looking = True  # as while a look takes its seconds
         headset = {
+            "style_id": "folk",
             "source_id": "headset:Muse 2",
             "recording": None,
             "name": "S02",
@@ -396,6 +447,7 @@ class TestNewSession:
                 answer.json()["detail"] == "the headset is being looked for: try again in a moment"
             )
         recording = {
+            "style_id": "folk",
             "source_id": "dataset:synthetic",
             "recording": "short",
             "name": "S02",
@@ -405,7 +457,13 @@ class TestNewSession:
 
 
 def recording_request(output=SPEAKERS):
-    return {"source_id": "dataset:synthetic", "recording": "short", "name": "S02", "output": output}
+    return {
+        "style_id": "folk",
+        "source_id": "dataset:synthetic",
+        "recording": "short",
+        "name": "S02",
+        "output": output,
+    }
 
 
 class TestAudioOutput:

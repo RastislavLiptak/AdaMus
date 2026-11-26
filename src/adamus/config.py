@@ -17,6 +17,12 @@ from adamus import constants as c
 from adamus.errors import AdamusError
 
 STYLE_TEXT = r"[a-z][a-z0-9-]*( [a-z][a-z0-9-]*)*"  # Pd would turn a numeric word into a float
+STYLE_ID = r"[a-z]+"  # in the addresses of the API and the names of the files of a style
+# A root, then its kind: major, minor, seventh, minor seventh, major seventh, or an open fifth.
+CHORD = r"[A-G](m|7|m7|maj7|5)?"
+BEATS_PER_BAR = 4  # a chord lasts a bar
+FASTEST_BPM = 300.0  # faster, the chords would flood the generator with notes
+LOUDEST_DB = 2.0  # of the generator's output: measured, the loudest moments of focus then clip
 INVALID = "invalid configuration:"  # heads the list of what is wrong with one
 LONGEST_S = 24 * 60 * 60  # no block and no wait lasts a day; longer ones overflow in samples
 
@@ -38,8 +44,8 @@ class Block:
 class Generator:
     folder: str  # where scripts/install_generator.sh installed the generator
     model: str  # name of the model, e.g. mrt2_small
-    prompt_idle: str
-    prompt_focus: str
+    style_guidance: float  # how closely the music follows its style text
+    note_guidance: float  # how closely it follows the chords
 
     @property
     def directory(self) -> Path:
@@ -72,6 +78,30 @@ class Generator:
 
 
 @dataclass(frozen=True)
+class Style:
+    """One piece of music in two forms: the quiet one at rest, the full one in focus."""
+
+    id: str  # how the program and the app know it
+    name: str  # as the app shows it
+    about: str  # how it sounds, in a sentence
+    rest: str  # the style text of the quiet form
+    focus: str  # of the full form
+    tempo_bpm: float
+    chords: list[str]  # one a bar, again and again
+    chord_gap_s: float  # between letting a chord go and striking the next
+    focus_power_chords: bool  # in focus only root, fifth and octave
+    focus_drums: bool  # drums may come in focus; at rest they never do
+    rest_volume_db: float
+    focus_volume_db: float
+    temperature: float
+    top_k: int
+
+    @property
+    def bar_s(self) -> float:
+        return BEATS_PER_BAR * 60.0 / self.tempo_bpm
+
+
+@dataclass(frozen=True)
 class Timeouts:
     stream_s: float
     pd_connect_s: float
@@ -83,9 +113,16 @@ class Config:
     board: Board
     protocol: list[Block]
     generator: Generator
+    styles: list[Style]
     timeouts: Timeouts
     poll_s: float
     raw: dict[str, Any]  # the mapping this object was built from
+
+    @property
+    def style(self) -> Style:
+        """The style a session of this configuration plays: its first. The form gives a session
+        the one chosen alone (with_style), so that the copy it keeps says what played."""
+        return self.styles[0]
 
 
 def load_config(path: Path) -> Config:
@@ -121,27 +158,32 @@ def parse_config(raw: dict[str, Any]) -> Config:
     generator = _section(Generator, raw.get("generator"), "generator", problems)
     timeouts = _section(Timeouts, raw.get("timeouts"), "timeouts", problems)
     protocol = _protocol(raw.get("protocol"), problems)
+    styles = _styles(raw.get("styles"), problems)
     if not _has_type(raw.get("poll_s"), float):
         problems.append(f"poll_s: expected a number, got {raw.get('poll_s')!r}")
     if not problems:
         problems += _range_problems(generator, timeouts, raw["poll_s"])
+    if not problems:
+        problems += _style_problems(styles)
     if not problems:
         problems += _board_problems(board)
     if not problems:
         problems += _consistency_problems(board, timeouts, raw["poll_s"])
     if problems:
         raise AdamusError(INVALID, *(f"  {problem}" for problem in problems))
-    return Config(board, protocol, generator, timeouts, float(raw["poll_s"]), raw)
+    return Config(board, protocol, generator, styles, timeouts, float(raw["poll_s"]), raw)
 
 
 # --- Structure and types ------------------------------------------------------
 
 
 def _has_type(value: Any, kind: Any) -> bool:
-    """Is a YAML value an int, float or str as expected? A whole number will do for a float,
-    and a number means a finite one: YAML also knows .nan and .inf."""
+    """Is a YAML value an int, float, bool, str or list of texts as expected? A whole number will
+    do for a float, and a number means a finite one: YAML also knows .nan and .inf."""
     if kind is float:
         return type(value) is int or (type(value) is float and math.isfinite(value))
+    if kind == list[str]:
+        return type(value) is list and all(type(item) is str for item in value)
     return type(value) is kind
 
 
@@ -192,6 +234,14 @@ def _protocol(data: Any, problems: list[str]) -> list[Block]:
     return [Block(label, duration) for label, duration in data]
 
 
+def _styles(data: Any, problems: list[str]) -> list[Style]:
+    if type(data) is not list or not data:
+        problems.append("styles: expected a non-empty list of styles")
+        return []
+    built = [_section(Style, item, f"styles[{index}]", problems) for index, item in enumerate(data)]
+    return [style for style in built if style is not None]
+
+
 # --- Values -------------------------------------------------------------------
 
 
@@ -210,15 +260,52 @@ def _range_problems(generator: Generator, timeouts: Timeouts, poll_s: float) -> 
         (generator.folder != "", "generator.folder: must name a folder"),
         (generator.model != "" and "/" not in generator.model,
          "generator.model: must be the name of a model, not a path"),
-        (is_style_text(generator.prompt_idle), "generator.prompt_idle: not a valid style text"),
-        (is_style_text(generator.prompt_focus), "generator.prompt_focus: not a valid style text"),
-        (generator.prompt_idle != generator.prompt_focus,
-         "generator.prompt_idle, prompt_focus: must be two different styles"),
+        (generator.style_guidance > 0 and generator.note_guidance > 0,
+         "generator: guidance must be positive"),
         (min(every_timeout) > 0, "timeouts: every timeout must be positive"),
         (max(every_timeout) <= LONGEST_S, "timeouts: none may be longer than a day"),
         (poll_s > 0, "poll_s: must be positive"),
     ]  # fmt: skip
     return _failed(checks)
+
+
+def _style_problems(styles: list[Style]) -> list[str]:
+    """Each style on its own, and the ids and names of all of them, which must differ."""
+    checks: list[tuple[bool, str]] = []
+    for index, style in enumerate(styles):
+        at = f"styles[{index}]"
+        checks += [
+            (re.fullmatch(STYLE_ID, style.id) is not None, f"{at}.id: lower-case letters only"),
+            (style.name.strip() != "", f"{at}.name: must not be empty"),
+            (is_style_text(style.rest), f"{at}.rest: not a valid style text"),
+            (is_style_text(style.focus), f"{at}.focus: not a valid style text"),
+            (style.rest != style.focus, f"{at}.rest, focus: must be two different styles"),
+            (0 < style.tempo_bpm <= FASTEST_BPM,
+             f"{at}.tempo_bpm: above 0, at most {FASTEST_BPM:g}"),
+            (style.chords != [] and all(re.fullmatch(CHORD, chord) for chord in style.chords),
+             f"{at}.chords: at least one, each a root A to G, then nothing, m, 7, m7, maj7 or 5"),
+            (style.tempo_bpm <= 0 or 0 <= style.chord_gap_s < style.bar_s,  # no tempo, no bar
+             f"{at}.chord_gap_s: from 0, shorter than a bar"),
+            (max(style.rest_volume_db, style.focus_volume_db) <= LOUDEST_DB,
+             f"{at}: volumes at most {LOUDEST_DB:g} dB"),
+            (style.temperature > 0, f"{at}.temperature: must be positive"),
+            (style.top_k >= 1, f"{at}.top_k: at least 1"),
+        ]  # fmt: skip
+    ids, names = [style.id for style in styles], [style.name for style in styles]
+    checks += [
+        (len(set(ids)) == len(ids), "styles: every id must differ"),
+        (len(set(names)) == len(names), "styles: every name must differ"),
+    ]
+    return _failed(checks)
+
+
+def with_style(config: Config, style_id: str) -> Config:
+    """The configuration of a session that plays the style ``style_id``: its only style, so that
+    the copy the session keeps says exactly what played."""
+    chosen = [style for style in config.raw["styles"] if style["id"] == style_id]
+    if not chosen:
+        raise AdamusError(f"{style_id}: no such style")
+    return parse_config({**config.raw, "styles": chosen})
 
 
 def _board_problems(board: Board) -> list[str]:

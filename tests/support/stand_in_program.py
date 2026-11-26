@@ -6,8 +6,8 @@ app (src/ui) start in its place, so that they talk to the real program and its r
 It runs in ``folder``, over the sessions and the data a test put there, with the configuration
 of the repository, the generator and the focus models of the tests; its headset is the
 stand-in one, which is on; paced, a session with it takes seconds of real time, so that a
-person, or a test acting as one, can stop it. It speaks to the app as the program does
-(app_link.py) and ends when its input closes.
+person, or a test acting as one, can stop it, while one over a recording runs as fast as it
+can. It speaks to the app as the program does (app_link.py) and ends when its input closes.
 """
 
 import os

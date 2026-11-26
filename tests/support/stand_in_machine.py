@@ -75,7 +75,9 @@ class StandInMachine(Machine):
         self.installed: list[str] = []  # the generator folders an installation ran for
         self.training = "fails"  # or "trains" the models of the project, or "does nothing"
         self.trainings = 0
-        self.paced = False  # a stop request comes while a session runs: each poll takes real time
+        # a stop request comes while a session with the headset runs: each poll takes real time;
+        # one over a recording ends by itself, as fast as it can
+        self.paced = False
         self.poll_takes_s = POLL_TAKES_S  # when paced
 
     def train_focus_detector(self):
@@ -114,7 +116,9 @@ class StandInMachine(Machine):
     def devices(self, config, recording, generator, stop):
         if self.source_failure:
             raise OSError(self.source_failure)
-        clock = PacedClock(self.poll_takes_s) if self.paced else StandInClock()
+        clock = (
+            PacedClock(self.poll_takes_s) if self.paced and recording is None else StandInClock()
+        )
         if recording is None:
             matrix = synthetic_matrix(LIVE_PROTOCOL)[:, : self.live_samples]
             self.sources.append(StandInSource(matrix, live=True))

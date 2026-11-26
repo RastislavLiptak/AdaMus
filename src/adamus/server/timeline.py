@@ -8,14 +8,14 @@ lies around zero as the filtered one does, and for an electrode of the detector 
 signal the detector worked on. filtered.f32 holds the window of every step; the steps
 overlap, so each adds what it ends with that the step before did not cover: the hop, or its
 whole window when it is the first or follows a gap. The music is an envelope with one bucket
-per sample of EEG; it begins when the generator started recording, before the first sample.
+per sample of EEG; it begins when the generator started recording, once the stream had.
 Then come the blocks the person was asked to keep, the chance of focus after every step (and
 which steps had a signal too disturbed to use), and how far toward focus the music was sent.
 The lines of adamus.log and pd.log come with the moment each was written, so that playing
 the session shows them as they came; a line without a time goes on with the one before it,
-as a traceback does. So do the events of the session, each at the sample it came with. The
-app is told what to draw only: titles, groups, captions, the colours of the palette and
-what they stand for.
+as a traceback does. So do the events of the session and what the music generator was sent,
+each at the sample it came with. The app is told what to draw only: titles, groups, captions,
+the colours of the palette and what they stand for.
 """
 
 import math
@@ -66,7 +66,7 @@ RESTING: Colour = "indigo"
 REJECTED: Colour = "gray"
 STATE_COLOURS: dict[str, Colour] = {c.FOCUS: FOCUSED, c.REST: RESTING}  # of the blocks
 LEGEND: dict[Colour, str] = {FOCUSED: "Focus", RESTING: "Rest", REJECTED: "Rejected"}
-LOG, EVENTS = "Log", "Events"  # the titles of the consoles
+LOG, EVENTS, GENERATOR = "Log", "Events", "Generator"  # the titles of the consoles
 SAMPLE_TYPE = np.float32  # of the samples sent to the app
 Placing = Callable[[float], float]  # a moment of the time of day to its time on the timeline
 LOG_SOURCES = ((c.PROGRAM_NAME, c.FILE_LOG), ("Pd", c.FILE_PD_LOG))  # who wrote each log
@@ -326,6 +326,15 @@ def event_lines(session: SessionFolder) -> list[ConsoleLine]:
     return lines
 
 
+def generator_lines(session: SessionFolder) -> list[ConsoleLine]:
+    """What the music generator was sent, each at the samples received when it was sent; none
+    of a session from before this was recorded."""
+    return [
+        ConsoleLine(time_s=sent["n"] / session.fs, source=None, severity="info", text=sent["msg"])
+        for sent in session.generator_messages
+    ]
+
+
 def colours_of(track: Track) -> list[Colour | None]:
     """The colours a track tints what it draws with."""
     if not isinstance(track, CurveTrack):
@@ -363,7 +372,8 @@ def session_tracks(folder: Path) -> SessionTracks:
     groups = [TrackGroup(title=title, colour=GROUP_COLOURS[title], tracks=tracks)
               for title, tracks in grouped]  # fmt: skip
     consoles = [Console(title=LOG, lines=session_log(folder, place)),
-                Console(title=EVENTS, lines=event_lines(session))]  # fmt: skip
+                Console(title=EVENTS, lines=event_lines(session)),
+                Console(title=GENERATOR, lines=generator_lines(session))]  # fmt: skip
     drawn = [track for group in groups for track in group.tracks]
     colours: list[Colour | None] = [colour for track in drawn for colour in colours_of(track)]
     timeline = Timeline(

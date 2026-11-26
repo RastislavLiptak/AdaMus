@@ -95,6 +95,21 @@ struct APIClient: Sendable, Equatable {
         try await decoded("api/new-session/refresh", method: "POST")
     }
 
+    /// Where a sample of a style of music is played from; a player cannot send a header, so the
+    /// token goes in the address.
+    func sampleURL(of style: String) -> URL {
+        url("api/styles/\(style)/sound", query: ["token": token])
+    }
+
+    /// The sample and the cover of the style a session played, its own copies; with the token
+    /// in their address, as a player and an image ask without a header.
+    func music(of session: String) -> (sample: URL, cover: URL) {
+        (
+            url("api/sessions/\(session)/music/sound", query: ["token": token]),
+            url("api/sessions/\(session)/music/cover", query: ["token": token])
+        )
+    }
+
     func check(source: String, recording: String?) async throws -> SourceCheck {
         try await decoded("api/sources/\(source)/check", query: recording.map { ["recording": $0] } ?? [:])
     }
