@@ -9,7 +9,6 @@ import soundfile
 from adamus import constants as c
 from adamus.datasets import read_recording
 from adamus.evaluation.session_reader import load_session_folder
-from adamus.realtime.generator_messages import REC_START, START_W_FOCUS
 from adamus.server.api_models import CurveTrack
 from adamus.server.timeline import (
     envelope,
@@ -19,11 +18,13 @@ from adamus.server.timeline import (
     session_log,
     session_tracks,
     severity_of,
+    song_time,
 )
-from adamus.session_format import log_time, read_jsonl
+from adamus.session_format import EVENT_MUSIC_START, log_time, read_jsonl
 from tests.support.finished_sessions import CONTEXT, FS, H, N
 
 ELECTRODES = list(c.DETECTOR_ELECTRODES)
+MARKED = "INFO adamus: a line the test wrote"
 
 
 @pytest.fixture(scope="module")
@@ -58,7 +59,7 @@ def test_the_tracks_in_their_order_in_their_groups(tracks, played):
     assert tints == ["pink", "purple", "teal"]  # the music, the detection, the signal
     titles = [(t.title, t.caption) for t in every_track(tracks)][:2]
     assert titles == [
-        ("Music", "faded: 0–100 % toward focus"),
+        ("Music", "faded: the state it followed"),
         ("Detection", "chance of focus under the protocol"),
     ]  # fmt: skip
     assert [(e.colour, e.title) for e in tracks.timeline.legend] == [
@@ -109,9 +110,9 @@ def test_a_scale_is_one_two_or_five_times_a_power_of_ten(values, scale):
     assert nice_scale(np.array(values)) == pytest.approx(scale)
 
 
-def test_the_music_begins_when_the_generator_started_recording(tracks, played):
+def test_the_music_begins_when_its_first_frame_went_to_the_output(tracks, played):
     events = read_jsonl(played.directory / c.FILE_EVENTS)
-    rec_start = next(e["t"] for e in events if e.get("msg") == "rec start;")
+    rec_start = next(e["t"] for e in events if e["type"] == EVENT_MUSIC_START)
     raw = np.loadtxt(played.directory / c.FILE_RAW, delimiter="\t", ndmin=2).T
     meta = json.loads((played.directory / c.FILE_META).read_text())
     music = by_id(tracks)["music"]
@@ -130,8 +131,8 @@ def test_the_timeline_ends_with_what_ended_last_the_samples_the_music_or_the_ste
     assert tracks.timeline.end_s == pytest.approx(max(ends))
 
 
-def test_music_without_the_moment_its_recording_began_is_not_shown(copied):
-    events = [e for e in read_jsonl(copied / c.FILE_EVENTS) if e.get("msg") != "rec start;"]
+def test_music_without_the_moment_it_began_is_not_shown(copied):
+    events = [e for e in read_jsonl(copied / c.FILE_EVENTS) if e["type"] != EVENT_MUSIC_START]
     (copied / c.FILE_EVENTS).write_text("".join(json.dumps(e) + "\n" for e in events))
     shown = session_tracks(copied)
     assert "music" not in by_id(shown) and "control" in by_id(shown)
@@ -192,29 +193,29 @@ def test_a_step_whose_signal_was_not_clean_is_drawn_in_the_tone_of_rejected_ones
     assert ("gray", "Rejected") in [(e.colour, e.title) for e in shown.timeline.legend]
 
 
-def test_the_music_control_holds_what_was_sent_from_one_step_to_the_next(tracks, played):
+def test_the_music_control_holds_the_state_told_from_one_step_to_the_next(tracks, played):
     control = by_id(tracks)["music"].level
     ends = [tick["n_end"] / FS for tick in played.ticks]
     timeline = tracks.timeline
     assert [step.start_s for step in control] == [timeline.start_s, *ends]
     assert [step.end_s for step in control] == [*ends, timeline.end_s]
-    level = START_W_FOCUS  # the music starts in its quiet form, before it records
-    assert control[0].value == level
+    focus = False  # the music starts at rest
+    assert (control[0].value, control[0].colour) == (0.0, "indigo")
     for step, tick in zip(control[1:], played.ticks, strict=True):
-        level = tick["w_focus"] if tick["t_sent"] is not None else level
-        assert step.value == level
-    assert any(step.value > 0 for step in control)
+        focus = tick["told"] == c.FOCUS if tick["told"] is not None else focus
+        assert (step.value, step.colour) == ((1.0, "orange") if focus else (0.0, "indigo"))
+    assert {step.value for step in control} == {0.0, 1.0}
 
 
-def test_a_step_that_sent_nothing_leaves_the_music_where_it_was(copied, played):
-    def unsent(ticks):
-        ticks[0]["t_sent"] = None
-        ticks[3]["t_sent"] = None
-        ticks[3]["w_focus"] = 0.123  # never reached the music
+def test_a_step_that_told_nothing_leaves_the_music_as_it_was(copied, played):
+    def untold(ticks):
+        ticks[0]["t_sent"], ticks[0]["told"] = None, None
+        ticks[3]["t_sent"], ticks[3]["told"] = None, None  # never reached the music
 
-    steps = by_id(session_tracks(with_ticks(copied, unsent)))["music"].level
-    assert steps[1].value == START_W_FOCUS  # step 0: still as the session started it
-    assert steps[4].value == played.ticks[2]["w_focus"] != 0.123  # step 3: as step 2 left it
+    steps = by_id(session_tracks(with_ticks(copied, untold)))["music"].level
+    assert steps[1].value == 0.0  # step 0: still at rest, as the session started it
+    told = 1.0 if played.ticks[2]["told"] == c.FOCUS else 0.0
+    assert steps[4].value == told  # step 3: as step 2 left it
 
 
 def test_a_skipped_step_leaves_the_filtered_signal_where_its_steps_ended(copied, played):
@@ -288,32 +289,38 @@ def test_a_session_that_received_nothing_has_empty_tracks(copied):
     assert (tracks.timeline.start_s, tracks.timeline.end_s) == (0.0, 0.0)
     assert by_id(tracks)["detection"].steps == []
     (quiet,) = by_id(tracks)["control"].steps  # the music as the session started it
-    assert (quiet.start_s, quiet.end_s, quiet.value) == (0.0, 0.0, START_W_FOCUS)
+    assert (quiet.start_s, quiet.end_s, quiet.value) == (0.0, 0.0, 0.0)
 
 
-def test_the_lines_of_the_logs_lie_where_the_samples_came_when_they_were_written(copied):
+def add_to_the_log(folder, moment, said=MARKED):
+    with (folder / c.FILE_LOG).open("a", encoding="utf-8") as log:
+        print(log_time(moment), said, file=log)
+
+
+def test_the_lines_of_the_log_lie_where_the_samples_came_when_they_were_written(copied):
     folder = copied
     session = load_session_folder(folder)
     first = float(session.raw_samples()[session.meta["timestamp_row"]][0])
-    (folder / c.FILE_PD_LOG).write_text(f"{log_time(first + 2.5)} mrt2~: state reset.\n")
+    add_to_the_log(folder, first + 2.5)
     log = console(session_tracks(folder), "Log")
-    (line,) = [line for line in log if line.source == "Pd"]
+    (line,) = [line for line in log if line.text == MARKED]
     assert line.time_s == pytest.approx(2.5, abs=0.001)  # the time of a log is to the millisecond
+    assert line.source == "AdaMus"
     assert any(line.text.startswith("DEBUG adamus.realtime.session: step 0:") for line in log)
 
 
-def test_without_samples_the_logs_lie_where_the_music_began(copied):
+def test_without_samples_the_log_lies_where_the_music_began(copied):
     folder = copied
     (folder / c.FILE_RAW).unlink()
-    began = load_session_folder(folder).fudi_time(REC_START)
+    began = load_session_folder(folder).music_began
     assert began is not None
-    (folder / c.FILE_PD_LOG).write_text(f"{log_time(began + 1)} mrt2~: state reset.\n")
+    add_to_the_log(folder, began + 1)
     log = console(session_tracks(folder), "Log")
-    (line,) = [line for line in log if line.source == "Pd"]
+    (line,) = [line for line in log if line.text == MARKED]
     assert line.time_s == pytest.approx(1.0, abs=0.001)
 
 
-# The logs, at the moments their lines were written.
+# The log, at the moments its lines were written.
 
 ZERO = 1_800_000_000.0  # the moment time 0 of the timeline stands for
 
@@ -326,14 +333,12 @@ def write_log(path, *lines):
     path.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
 
 
-def test_the_lines_of_both_logs_come_in_the_order_they_were_written(tmp_path):
+def test_the_lines_of_the_log_lie_at_the_moments_they_were_written(tmp_path):
     write_log(tmp_path / c.FILE_LOG, f"{log_time(ZERO - 2)} INFO adamus: opened",
               f"{log_time(ZERO + 1.5)} DEBUG adamus.realtime.session: step 0")  # fmt: skip
-    write_log(tmp_path / c.FILE_PD_LOG, f"{log_time(ZERO + 0.25)} mrt2~: state reset.")
     lines = session_log(tmp_path, FROM_ZERO)
     assert [(line.time_s, line.source, line.text) for line in lines] == [
         (-2.0, "AdaMus", "INFO adamus: opened"),
-        (0.25, "Pd", "mrt2~: state reset."),
         (1.5, "AdaMus", "DEBUG adamus.realtime.session: step 0"),
     ]
 
@@ -357,20 +362,19 @@ def test_a_traceback_stays_with_the_line_it_belongs_to(tmp_path):
 
 
 def test_a_warning_in_a_log_is_a_line_of_a_warning(tmp_path):
-    write_log(tmp_path / c.FILE_LOG, f"{log_time(ZERO)} WARNING adamus: Pd did not finish")
+    write_log(tmp_path / c.FILE_LOG, f"{log_time(ZERO)} WARNING adamus: the disk is nearly full")
     (line,) = session_log(tmp_path, FROM_ZERO)
     assert line.severity == "warning"
 
 
 def test_a_line_that_is_not_utf_8_is_read_all_the_same(tmp_path):
-    (tmp_path / c.FILE_PD_LOG).write_bytes(log_time(ZERO).encode() + b" pd: caf\xe9\n")
+    (tmp_path / c.FILE_LOG).write_bytes(log_time(ZERO).encode() + b" INFO adamus: caf\xe9\n")
     (line,) = session_log(tmp_path, FROM_ZERO)
-    assert line.text == "pd: caf\ufffd"  # the byte it could not read, marked
+    assert line.text == "INFO adamus: caf\ufffd"  # the byte it could not read, marked
 
 
 def test_a_log_that_was_not_written_has_no_lines(tmp_path):
-    write_log(tmp_path / c.FILE_PD_LOG, f"{log_time(ZERO)} pd: started")
-    assert [line.source for line in session_log(tmp_path, FROM_ZERO)] == ["Pd"]
+    assert session_log(tmp_path, FROM_ZERO) == []
 
 
 def test_a_session_with_no_time_0_shows_no_lines(tmp_path):
@@ -404,9 +408,9 @@ def test_the_music_and_the_logs_lie_at_the_samples_also_when_the_headset_lost_so
     (folder / c.FILE_RAW).write_text("".join(row + "\n" for row in kept))
     session = load_session_folder(folder)
     after_the_gap = float(session.raw_samples()[session.meta["timestamp_row"]][12 * FS])
-    (folder / c.FILE_PD_LOG).write_text(f"{log_time(after_the_gap)} mrt2~: state reset.\n")
+    add_to_the_log(folder, after_the_gap)
     log = console(session_tracks(folder), "Log")
-    (line,) = [line for line in log if line.source == "Pd"]
+    (line,) = [line for line in log if line.text == MARKED]
     assert line.time_s == pytest.approx(12.0, abs=0.001)  # at sample 12 * FS, not a second later
 
 
@@ -419,7 +423,7 @@ def test_every_event_lies_at_the_samples_received_when_it_happened_as_a_console_
         assert line.time_s == event["n"] / FS
         assert line.text.startswith(event["type"])
     texts = [line.text for line in lines]
-    assert "FUDI rec start;" in texts  # what was sent to Pd, as it was sent
+    assert "MUSIC_START" in texts and "MUSIC_END dropouts=0" in texts
     block = next(line.text for line in lines if line.text.startswith("BLOCK_START"))
     assert block == "BLOCK_START index=0 label=REST marker=1"  # what it holds, field by field
     assert {line.severity for line in lines} == {"info"}
@@ -431,7 +435,7 @@ def test_the_timeline_of_a_session_whose_music_began_before_its_stream_begins_wi
     """As sessions from before the music waited for the stream."""
     events = read_jsonl(copied / c.FILE_EVENTS)
     for event in events:
-        if event["type"] == "FUDI":
+        if event["type"] == EVENT_MUSIC_START:
             event["t"] -= 3.0
     (copied / c.FILE_EVENTS).write_text("".join(json.dumps(e) + "\n" for e in events))
     tracks = session_tracks(copied)
@@ -440,19 +444,28 @@ def test_the_timeline_of_a_session_whose_music_began_before_its_stream_begins_wi
     assert tracks.timeline.start_s == music.start_s
 
 
-def test_everything_the_generator_was_sent_lies_at_the_samples_received_when_it_was_sent(
-    tracks, played
-):
-    lines = console(tracks, "Generator")
-    sent = read_jsonl(played.directory / c.FILE_GENERATOR)
-    assert [(line.time_s, line.text) for line in lines] == [(s["n"] / FS, s["msg"]) for s in sent]
-    assert any(line.text.startswith("noteon") for line in lines)  # the chords too
+def test_where_the_music_went_in_its_song_lies_when_it_went_there(tracks, played):
+    lines = console(tracks, "Music")
+    went = read_jsonl(played.directory / c.FILE_MUSIC)
+    assert len(lines) == len(went) and went[0]["kind"] == "start"
+    assert lines[0].text == "start rest: 0:00.0"
+    switch = next(index for index, line in enumerate(went) if line["kind"] == "switch")
+    assert lines[switch].text.startswith(f"switch {went[switch]['mark'].lower()}: ")
+    assert " → " in lines[switch].text
+    times = [line.time_s for line in lines]
+    assert times == sorted(times) and times[0] == by_id(tracks)["music"].start_s
     assert {line.severity for line in lines} == {"info"}
 
 
-def test_a_session_from_before_the_generator_was_recorded_shows_nothing_it_was_sent(copied):
-    (copied / c.FILE_GENERATOR).unlink()
-    assert console(session_tracks(copied), "Generator") == []
+def test_a_place_in_the_song_is_written_in_minutes_and_seconds():
+    assert [song_time(seconds) for seconds in (0, 5.25, 65.3, 600)] == [
+        "0:00.0", "0:05.2", "1:05.3", "10:00.0",
+    ]  # fmt: skip
+
+
+def test_a_session_whose_music_never_began_shows_nowhere_it_went(copied):
+    (copied / c.FILE_MUSIC).unlink()
+    assert console(session_tracks(copied), "Music") == []
 
 
 def test_an_error_of_the_session_is_an_error_line_that_says_what_went_wrong(copied):
@@ -484,8 +497,7 @@ def test_an_electrode_the_session_did_not_filter_is_shown_raw_alone(copied):
 
 def test_a_line_of_a_log_says_how_grave_it_is():
     assert severity_of("DEBUG adamus.realtime.session: step 0") == "debug"
-    assert severity_of("WARNING adamus.realtime.session: Pd did not finish") == "warning"
+    assert severity_of("WARNING adamus.realtime.session: the disk is full") == "warning"
     assert severity_of("ERROR adamus.realtime.session: session failed") == "error"
     assert severity_of("CRITICAL adamus.main: the program could not go on") == "error"
-    assert severity_of("error: mrt2~: failed to init assets") == "error"  # as Pd marks it
-    assert severity_of("mrt2~: model loaded.") == "info"
+    assert severity_of("a line without a level") == "info"

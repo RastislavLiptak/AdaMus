@@ -36,7 +36,9 @@ def tick(
         "block_index": block, "block_label": label, "full_window": full,
         "max_abs_uv": [MAX_ABS_UV for _ in range(ELECTRODES)], "valid": valid,
         "score": score if valid and f is not None else None, "f": f,
-        "f_held": f is not None and not valid, "w_idle": 1.0 - (f or 0.0), "w_focus": f or 0.0,
+        "f_held": f is not None and not valid,
+        "told": (c.FOCUS if f >= c.FOCUS_THRESHOLD else c.REST) if was_sent and f is not None
+        else None,
     }  # fmt: skip
 
 

@@ -15,7 +15,7 @@ from adamus import constants as c
 
 log = logging.getLogger(__name__)
 
-# The actions of the program. The generator reports its own (music_generator).
+# The actions of the program.
 ACTION_PREFLIGHT = "PREFLIGHT"
 ACTION_HEADSET_LOOKED_FOR = "HEADSET_LOOKED_FOR"  # for the form of a new session: was it found
 ACTION_SESSION_REQUESTED = "SESSION_REQUESTED"  # the source and the name the operator chose

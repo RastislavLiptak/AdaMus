@@ -4,8 +4,9 @@ app (src/ui) start in its place, so that they talk to the real program and its r
     python -m tests.support.stand_in_program <folder> [paced]
 
 It runs in ``folder``, over the sessions and the data a test put there, with the configuration
-of the repository, the generator and the focus models of the tests; its headset is the
-stand-in one, which is on; paced, a session with it takes seconds of real time, so that a
+of the repository, the focus models of the tests and a marked song in its library, unless the
+test put one there; its music is a stand-in that plays nothing; its headset is the stand-in one,
+which is on; paced, a session with it takes seconds of real time, so that a
 person, or a test acting as one, can stop it, while one over a recording runs as fast as it
 can. It speaks to the app as the program does (app_link.py) and ends when its input closes.
 """
@@ -14,14 +15,14 @@ import os
 import sys
 from pathlib import Path
 
+from adamus import constants as c
 from adamus.app_link import AppMessages, messages_only_on_output
 from adamus.config import read_yaml, write_yaml
 from adamus.main import Program
 from tests.support.project_paths import CONFIG_FILE
-from tests.support.stand_in_generator_files import install_generator_files
 from tests.support.stand_in_machine import StandInMachine, place_focus_model
+from tests.support.stand_in_songs import SONG, place_song
 
-GENERATOR = "generator"  # the folder of the stand-in generator, in the folder of the run
 PACED = "paced"
 BY_HAND_POLL_S = 0.025  # of real time per poll, paced: a session with the headset takes ~30 s
 
@@ -29,9 +30,9 @@ BY_HAND_POLL_S = 0.025  # of real time per poll, paced: a session with the heads
 def main() -> int:
     folder = Path(sys.argv[1])
     raw = read_yaml(CONFIG_FILE)
-    raw["generator"]["folder"] = GENERATOR
     os.chdir(folder)
-    install_generator_files(Path(GENERATOR), raw["generator"]["model"])
+    if not (c.LIBRARY_DIR / SONG).is_dir():
+        place_song(c.LIBRARY_DIR, pictured=True)
     place_focus_model(Path())
     write_yaml(raw, Path("config.yaml"))
     machine = StandInMachine(Path("sessions"), Path("data"))

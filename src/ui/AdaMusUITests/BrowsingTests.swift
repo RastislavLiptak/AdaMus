@@ -35,6 +35,7 @@ final class BrowsingTests: WindowTests {
 
     func testANameAgainstTheRuleIsSaidAndCannotStartAndCancelLeavesNothing() {
         let sheet = newSession()
+        chooseSong(in: sheet)
         choose(source: "synthetic", in: sheet)
         sheet.textFields["Name"].typeText("a/b")
         XCTAssertTrue(text("Use at most 50 characters, without “/” or “:”.", in: sheet).exists)

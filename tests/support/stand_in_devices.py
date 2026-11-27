@@ -1,17 +1,24 @@
-"""Stand-ins for what a session talks to: EEG source, generator, clock, stop request."""
+"""Stand-ins for what a session talks to: EEG source, music, clock, stop request."""
 
+import shutil
 from pathlib import Path
 
 import numpy as np
+import soundfile
 from brainflow.board_shim import BoardShim
 
+from adamus import constants as c
 from adamus.config import Board
 from adamus.errors import AdamusError
 from adamus.realtime.eeg_source import electrodes_of_headset
+from adamus.realtime.song_sequencer import Decision
+from adamus.session_format import START, SWITCH
+from tests.support.stand_in_songs import ARTIST, SONG, place_song
 
 MUSE_2 = 38  # BrainFlow board id
 NUDGE_S = 1e-6  # every reading of the stand-in clock moves it on by this much
 CHUNK = 64  # samples a poll of a stand-in source delivers at most
+MUSIC_RATE = 8000  # Hz of the silence the stand-in music records
 
 
 TV, SPEAKERS = "TV", "MacBook Pro Speakers"  # the audio outputs of the stand-in Mac
@@ -101,59 +108,68 @@ class StandInSource:
         np.savetxt(self.raw_csv, self._matrix[:, : self._produced].T, delimiter="\t", fmt="%.6f")
 
 
-class StandInGenerator:
-    """Records every message a session sends."""
-
-    pd_version = "Pd-0.0-stand-in"
+class StandInMusic:
+    """Stands in for the song player: notes the state it is told at every step and plays
+    nothing. It switches as soon as it is told another state, where the player waits for the
+    end of a beat. Started, it copies the song in the folder ``song`` into the session, as the
+    player does, or places the stand-in song there; stopped, it records silence as long as it
+    played, as the player records what it played."""
 
     def __init__(
-        self, fail_after_steps: int | None = None, fail_to_start: str | tuple[str, ...] = ""
-    ) -> None:
+        self, clock: StandInClock, fail_after_steps: int | None = None,
+        fail_to_start: str = "", song: Path | None = None,
+    ) -> None:  # fmt: skip
+        self.output = SPEAKERS
+        self.song = song
+        self.states: list[str] = []  # what it was told, step by step
+        self.recording: Path | None = None
         self.started = self.stopped = 0
-        self.outputs: list[str] = []  # it was started on, in turn
-        self.output: str | None = None
-        self.output_lost = False  # as the test sets it
-        self._running = False
-        self._fail_to_start = fail_to_start
-        self.messages: list[str] = []
-        self.output_copies: list[Path | None] = []
+        self.problem_said: str | None = None  # as the test sets it
+        self.dropouts = 0
+        self._clock = clock
+        self._began = 0.0
+        self._went_on = 0.0  # monotonic: the player counts what it played, not the time of day
         self._fail_after_steps = fail_after_steps
+        self._fail_to_start = fail_to_start
+        self._made: list[Decision] = []
 
-    @property
-    def running(self) -> bool:
-        return self._running
-
-    def start(self, output: str) -> None:
-        self.outputs.append(output)
+    def start(self, recording: Path, song: Path) -> float:
         if self._fail_to_start:
-            lines = self._fail_to_start
-            raise AdamusError(*([lines] if isinstance(lines, str) else lines))
+            raise AdamusError(self._fail_to_start)
         self.started += 1
-        self.output, self.output_lost = output, False
-        self._running = True
+        if self.song is None:
+            place_song(song.parent, song.name, title=SONG, artist=ARTIST)
+        else:
+            shutil.copytree(self.song, song)
+        self.recording = recording
+        self._began = self._clock.now()
+        self._went_on = self._clock.monotonic()
+        self._made.append(Decision(0.0, START, c.REST, None, 0.0))
+        self._playing = c.REST
+        return self._began
+
+    def want(self, mark: str) -> None:
+        limit = self._fail_after_steps
+        if limit is not None and len(self.states) >= limit:
+            raise OSError("the output is gone")
+        self.states.append(mark)
+        if mark != self._playing:
+            out_s = self._clock.now() - self._began
+            self._made.append(Decision(out_s, SWITCH, mark, out_s, out_s))
+            self._playing = mark
+
+    def decisions(self) -> list[Decision]:
+        made, self._made = self._made, []
+        return made
+
+    def problem(self) -> str | None:
+        return self.problem_said
 
     def stop(self) -> None:
-        """Stopped once, as Pd ends once: a second stop does nothing."""
-        if self._running:
-            self.stopped += 1
-        self._running = False
-
-    def send(self, message: str) -> None:
-        is_step = message.count("prompt") == 2
-        limit = self._fail_after_steps
-        if is_step and limit is not None and len(self.weights) >= limit:
-            raise OSError("broken pipe")
-        self.messages.append(message)
-
-    def copy_output_to(self, session_log: Path | None) -> None:
-        self.output_copies.append(session_log)
-
-    @property
-    def weights(self) -> list[tuple[float, float]]:
-        """(w_idle, w_focus) of every step message, as sent (three decimals)."""
-        steps = [message for message in self.messages if message.count("prompt") == 2]
-        pairs = [step.split(";")[:2] for step in steps]
-        return [(float(idle.split()[-1]), float(focus.split()[-1])) for idle, focus in pairs]
+        self.stopped += 1
+        if self.recording is not None and self.stopped == 1:
+            played = round((self._clock.monotonic() - self._went_on) * MUSIC_RATE)
+            soundfile.write(self.recording, np.zeros((played, 2)), MUSIC_RATE, subtype="PCM_16")
 
 
 class StopWhen:

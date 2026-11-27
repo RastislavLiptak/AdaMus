@@ -4,7 +4,7 @@ arguments.
 
 It tells the app how the checks go and where the API answers (app_link.py). It ends when the
 app ends, as when it is killed, or [CTRL]+[C] or kill end it: through the normal shutdown,
-which lets a running session end as it should and stops Pd.
+which lets a running session end as it should and stops its music.
 """
 
 import os
@@ -31,7 +31,7 @@ def main() -> int:
         print(f"usage: adamus (no arguments; it reads {c.FILE_CONFIG} in the current folder)")
         return EXIT_ERROR
     # kill and a closed terminal end the program like [CTRL]+[C]: through the normal shutdown,
-    # which stops Pd. Otherwise Pd would keep playing.
+    # which ends a running session as it should, with its music stopped and recorded.
     signal.signal(signal.SIGTERM, signal.default_int_handler)
     signal.signal(signal.SIGHUP, signal.default_int_handler)
     messages = AppMessages(messages_only_on_output())
@@ -84,12 +84,10 @@ class Program:
             # an interruption that comes now has been sent while the checks ran, and is handled)
             if server is not None:
                 server.close()
-            if preflight is not None and preflight.generator is not None:
-                preflight.generator.stop()
 
     def _app_ended(self) -> None:
         """The app has gone: a session that runs ends as when it is stopped, and the program
-        ends after it. A check may take minutes (a training, an installation), so while they
+        ends after it. A check may take minutes (the training of the detector), so while they
         run, the program is interrupted as [CTRL]+[C] would (through the same shutdown).
         Called in the thread that watches the input."""
         self._gone.set()

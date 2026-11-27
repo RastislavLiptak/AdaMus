@@ -73,6 +73,17 @@ class WindowTests: XCTestCase {
         sheet.textFields["Name"].click()
     }
 
+    /// Choose the stand-in song as the source of the music, in the song library the form opens.
+    func chooseSong(in sheet: XCUIElement) {
+        sheet.buttons["Choose…"].click()
+        let library = app.windows["Song Library"]
+        XCTAssertTrue(library.waitForExistence(timeout: patience), "the library opens")
+        library.cells.containing(.staticText, identifier: "Stand-in Song").firstMatch.click()
+        library.buttons["Choose"].click()
+        XCTAssertTrue(library.waitForNonExistence(timeout: patience), "chosen, the library closes")
+        XCTAssertTrue(text("Stand-in Song – Unknown Artist", in: sheet).waitForExistence(timeout: patience))
+    }
+
     /// A text of the form: some say it as their label, some as their value.
     func text(_ said: String, in sheet: XCUIElement) -> XCUIElement {
         sheet.staticTexts.matching(NSPredicate(format: "label == %@ OR value == %@", said, said))

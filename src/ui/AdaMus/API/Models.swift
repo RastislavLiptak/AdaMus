@@ -266,26 +266,17 @@ struct Dashboard: Decodable, Sendable {
     let failures: [String]  // what went wrong, each on its own
     let caution: String?  // what bears on how its results are read
     let highlights: [Highlight]
-    let music: Music?  // none of a session from before styles
+    let song: Song?  // the source of its music, as it kept it; none if its music never began
     let sections: [FactSection]
 }
 
-/// The style a session played: its forms as its sample plays them, how loud the sample is
-/// along it, and its other settings.
-struct Music: Decodable, Hashable, Sendable {
+/// A stretch of a song, or of the music of a session, that belongs to one state.
+struct SongPart: Decodable, Hashable, Sendable {
+    let startS: Double
+    let endS: Double
+    let mark: String
     let title: String
-    let parts: [MusicPart]
-    let loudness: [Double]  // of equal slices of the sample, the loudest 1
-    let lengthS: Double
-    let facts: [Fact]
-}
-
-struct MusicPart: Decodable, Hashable, Sendable {
-    let title: String
-    let prompt: String  // what the generator was told to play
-    let sound: String  // how loud, and with what
     let colour: Colour
-    let fromS: Double  // where it begins in the sample
 }
 
 // MARK: - A new session
@@ -297,17 +288,9 @@ struct SourceChoice: Decodable, Identifiable, Hashable, Sendable {
     let recordings: [String]
 }
 
-/// A style of music a session can play; its cover and a sample of it come from the program.
-struct StyleChoice: Decodable, Identifiable, Hashable, Sendable {
-    let id: String
-    let title: String
-}
-
 struct NewSessionForm: Decodable, Sendable {
     let sources: [SourceChoice]
     let sourcesHint: String
-    /// In the program's order; the first is chosen at first.
-    let styles: [StyleChoice]
     let namePattern: String
     let nameHint: String
 }
@@ -332,8 +315,8 @@ struct AudioOutputs: Decodable, Sendable {
 struct SessionRequest: Encodable, Equatable, Sendable {
     let sourceId: String
     let recording: String?
-    /// The style of music the session plays.
-    let styleId: String
+    /// The song the music of the session is made of.
+    let songId: String
     let name: String
     /// The audio output the music is to play on.
     let output: String
@@ -349,4 +332,53 @@ struct RunState: Decodable, Equatable, Sendable {
     let sessionId: String?
     /// Why the session could not start, or ended in an error.
     let problem: String?
+}
+
+// MARK: - The library of songs
+
+/// What a part of a song can be marked.
+struct MarkChoice: Decodable, Identifiable, Hashable, Sendable {
+    let id: String
+    let title: String
+    let colour: Colour
+}
+
+/// A song of the library, or a draft of one, where it is marked.
+struct Song: Decodable, Identifiable, Hashable, Sendable, SoundShape {
+    let id: String
+    let title: String
+    let artist: String?
+    let lengthS: Double
+    let loudness: [Double]  // of equal slices of the song, the loudest 1
+    let parts: [SongPart]  // what is marked, in the order of the song
+    let cover: String?  // the version of its picture, which changes with it; none without one
+}
+
+struct SongPage: Decodable {
+    let total: Int
+    let songs: [Song]  // by title
+}
+
+struct SongMarks: Decodable, Sendable {
+    let marks: [MarkChoice]
+    let unmarked: String  // what a part no mark covers is called
+}
+
+/// What a draft that goes into the library is called, and by whom (nil, left out, when it is not
+/// known), and the path of the picture chosen for it (nil keeps its own).
+struct DraftKept: Encodable, Sendable {
+    let title: String
+    let artist: String?
+    let picture: String?
+}
+
+struct DraftOfFile: Encodable, Sendable {
+    let path: String
+}
+
+/// Mark the stretch from ``startS`` to ``endS``; nil, left out, unmarks it.
+struct SongMark: Encodable, Equatable, Sendable {
+    let startS: Double
+    let endS: Double
+    let mark: String?
 }

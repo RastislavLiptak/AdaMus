@@ -8,14 +8,14 @@ lies around zero as the filtered one does, and for an electrode of the detector 
 signal the detector worked on. filtered.f32 holds the window of every step; the steps
 overlap, so each adds what it ends with that the step before did not cover: the hop, or its
 whole window when it is the first or follows a gap. The music is an envelope with one bucket
-per sample of EEG; it begins when the generator started recording, once the stream had.
+per sample of EEG; it begins when its first frame went to the output, once the stream had.
 Then come the blocks the person was asked to keep, the chance of focus after every step (and
-which steps had a signal too disturbed to use), and how far toward focus the music was sent.
-The lines of adamus.log and pd.log come with the moment each was written, so that playing
-the session shows them as they came; a line without a time goes on with the one before it,
-as a traceback does. So do the events of the session and what the music generator was sent,
-each at the sample it came with. The app is told what to draw only: titles, groups, captions,
-the colours of the palette and what they stand for.
+which steps had a signal too disturbed to use), and which state the music was told to follow.
+The lines of adamus.log come with the moment each was written, so that playing the session
+shows them as they came; a line without a time goes on with the one before it, as a traceback
+does. So do the events of the session, each at the sample it came with, and where the music
+went in its song, each when it went there. The app is told what to draw only: titles, groups,
+captions, the colours of the palette and what they stand for.
 """
 
 import math
@@ -29,7 +29,6 @@ import soundfile
 from adamus import constants as c
 from adamus.evaluation.metrics import read_audio
 from adamus.evaluation.session_reader import SessionFolder, load_session_folder
-from adamus.realtime.generator_messages import REC_START, START_W_FOCUS
 from adamus.server.api_models import (
     AudioTrack,
     Band,
@@ -58,7 +57,7 @@ TITLES = {MUSIC: "Music", DETECTION: "Detection", CONTROL: "Music Control"}
 MUSIC_GROUP, FOCUS_GROUP, EEG_GROUP = "Music", "Focus", "EEG"
 # Their colours, which the results of each kind take on the dashboard too.
 GROUP_COLOURS: dict[str, Colour] = {EEG_GROUP: "teal", FOCUS_GROUP: "purple", MUSIC_GROUP: "pink"}
-CAPTIONS = {DETECTION: "chance of focus under the protocol", CONTROL: "0–100 % toward focus"}
+CAPTIONS = {DETECTION: "chance of focus under the protocol", CONTROL: "the state it followed"}
 SIGNAL_UNIT = "µV"
 # the colours the states are drawn in
 FOCUSED: Colour = "orange"
@@ -66,14 +65,13 @@ RESTING: Colour = "indigo"
 REJECTED: Colour = "gray"
 STATE_COLOURS: dict[str, Colour] = {c.FOCUS: FOCUSED, c.REST: RESTING}  # of the blocks
 LEGEND: dict[Colour, str] = {FOCUSED: "Focus", RESTING: "Rest", REJECTED: "Rejected"}
-LOG, EVENTS, GENERATOR = "Log", "Events", "Generator"  # the titles of the consoles
+LOG, EVENTS, MUSIC_CONSOLE = "Log", "Events", "Music"  # the titles of the consoles
 SAMPLE_TYPE = np.float32  # of the samples sent to the app
 Placing = Callable[[float], float]  # a moment of the time of day to its time on the timeline
-LOG_SOURCES = ((c.PROGRAM_NAME, c.FILE_LOG), ("Pd", c.FILE_PD_LOG))  # who wrote each log
 SEVERITIES: dict[str, Severity] = {
     "DEBUG": "debug", "INFO": "info", "WARNING": "warning", "ERROR": "error", "CRITICAL": "error",
-}  # fmt: skip  # the levels adamus.log writes; Pd marks an error with ERROR_MARK
-ERROR_MARK = "error:"
+}  # fmt: skip  # the levels adamus.log writes
+SONG_TIME = "{minutes}:{seconds:04.1f}"  # a place in the song, as 1:05.3
 
 
 @dataclass(frozen=True)
@@ -173,27 +171,28 @@ def on_the_samples(stamps: np.ndarray, fs: float) -> Placing:
     return place
 
 
-def placing(stamps: np.ndarray | None, fs: float, rec_start: float | None) -> Placing | None:
+def placing(stamps: np.ndarray | None, fs: float, began: float | None) -> Placing | None:
     """How moments are put on the timeline: by the samples that came then; without samples
     from the start of the music; None when there is neither."""
     if stamps is not None:
         return on_the_samples(stamps, fs)
-    return None if rec_start is None else (lambda moment: moment - rec_start)
+    return None if began is None else (lambda moment: moment - began)
 
 
 def music_track(
-    session: SessionFolder, place: Placing | None, rec_start: float | None
+    session: SessionFolder, place: Placing | None
 ) -> tuple[AudioTrack, np.ndarray] | None:
-    """The music and its envelope, placed where it began (``rec_start``); None without audio or
-    without a start of it."""
+    """The music and its envelope, placed where it began; None without audio or without a
+    start of it."""
     try:
-        mono, _, rate = read_audio(session.directory / c.FILE_AUDIO)
+        mono, rate = read_audio(session.directory / c.FILE_AUDIO)
     except soundfile.SoundFileError:  # also when the file is not there
         return None
-    if rec_start is None or len(mono) == 0:
+    began = session.music_began
+    if began is None or len(mono) == 0:
         return None
     peaks = envelope(mono, rate, session.fs)
-    start = place(rec_start) if place is not None else 0.0
+    start = place(began) if place is not None else 0.0
     track = AudioTrack(
         id=MUSIC, title=TITLES[MUSIC], caption=None, start_s=start, duration_s=len(mono) / rate,
         rate_hz=session.fs, buckets=len(peaks) // 2,
@@ -239,19 +238,29 @@ def detection_track(session: SessionFolder, end_s: float) -> CurveTrack:
     )  # fmt: skip
 
 
-def control_steps(session: SessionFolder, start_s: float, end_s: float) -> list[CurveStep]:
-    """How far toward focus the music was sent. The session starts it in its quiet form, before
-    it records; the weights of a step go out at its end and hold until the next ones, so a
-    step that sent none leaves the music where it was."""
+def told_spans(
+    session: SessionFolder, start_s: float, end_s: float
+) -> list[tuple[float, float, str]]:
+    """The state the music was told to follow, span by span. The music starts at rest; a step
+    tells it at its end, and what it told holds until the next, so a step that told nothing
+    leaves the music as it was."""
     ends = [tick["n_end"] / session.fs for tick in session.ticks]
-    level = START_W_FOCUS
-    steps = [CurveStep(start_s=start_s, end_s=ends[0] if ends else end_s, value=level, colour=None)]
+    state = c.REST
+    spans = [(start_s, ends[0] if ends else end_s, state)]
     for index, tick in enumerate(session.ticks):
-        if tick["t_sent"] is not None:
-            level = tick["w_focus"]
-        until = ends[index + 1] if index + 1 < len(ends) else end_s
-        steps.append(CurveStep(start_s=ends[index], end_s=until, value=level, colour=None))
-    return steps
+        state = tick["told"] or state
+        spans.append((ends[index], ends[index + 1] if index + 1 < len(ends) else end_s, state))
+    return spans
+
+
+def control_steps(session: SessionFolder, start_s: float, end_s: float) -> list[CurveStep]:
+    """The state the music was told to follow: focus up, rest down."""
+    return [
+        CurveStep(
+            start_s=start, end_s=end, value=float(state == c.FOCUS), colour=STATE_COLOURS[state]
+        )
+        for start, end, state in told_spans(session, start_s, end_s)
+    ]
 
 
 def sound_tracks(
@@ -269,12 +278,8 @@ def sound_tracks(
 
 
 def severity_of(said: str) -> Severity:
-    """How grave a line of a log is: the level adamus.log begins it with; an error Pd printed;
-    otherwise information."""
-    level = said.split(" ", 1)[0]
-    if level in SEVERITIES:
-        return SEVERITIES[level]
-    return "error" if said.startswith(ERROR_MARK) else "info"
+    """How grave a line of the log is: the level it begins with; otherwise information."""
+    return SEVERITIES.get(said.split(" ", 1)[0], "info")
 
 
 def log_lines(path: Path, source: str, place: Placing) -> list[ConsoleLine]:
@@ -297,17 +302,12 @@ def log_lines(path: Path, source: str, place: Placing) -> list[ConsoleLine]:
 
 
 def session_log(folder: Path, place: Placing | None) -> list[ConsoleLine]:
-    """The lines of every log of the session in ``folder``, in the order they were written;
-    ``place`` puts a moment on the timeline, None when it has no time to put it at."""
-    if place is None:
-        return []
-    lines = [
-        line for source, name in LOG_SOURCES for line in log_lines(folder / name, source, place)
-    ]
-    return sorted(lines, key=lambda line: line.time_s)  # stable: a log keeps its own order
+    """The lines of the log of the session in ``folder``; ``place`` puts a moment on the
+    timeline, None when it has no time to put it at."""
+    return [] if place is None else log_lines(folder / c.FILE_LOG, c.PROGRAM_NAME, place)
 
 
-SAID = ("msg", "message")  # what an event says, shown as it is after what else it holds
+SAID = ("message",)  # what an event says, shown as it is after what else it holds
 NOT_SHOWN = ("t", "n", "type", *SAID)  # its time and type have places of their own
 
 
@@ -326,13 +326,21 @@ def event_lines(session: SessionFolder) -> list[ConsoleLine]:
     return lines
 
 
-def generator_lines(session: SessionFolder) -> list[ConsoleLine]:
-    """What the music generator was sent, each at the samples received when it was sent; none
-    of a session from before this was recorded."""
-    return [
-        ConsoleLine(time_s=sent["n"] / session.fs, source=None, severity="info", text=sent["msg"])
-        for sent in session.generator_messages
-    ]
+def song_time(seconds: float) -> str:
+    minutes, rest = divmod(seconds, 60)
+    return SONG_TIME.format(minutes=int(minutes), seconds=rest)
+
+
+def music_lines(session: SessionFolder, place: Placing | None) -> list[ConsoleLine]:
+    """Where the music went in its song, each when it went there: why (it started, a part ran
+    out, the state switched), the state it followed, and from where to where in the song."""
+    lines = []
+    for went in session.music_decisions:
+        at = place(went["t"]) if place is not None else went["n"] / session.fs
+        whence = "" if went["from_s"] is None else f"{song_time(went['from_s'])} → "
+        text = f"{went['kind']} {went['mark'].lower()}: {whence}{song_time(went['to_s'])}"
+        lines.append(ConsoleLine(time_s=at, source=None, severity="info", text=text))
+    return lines
 
 
 def colours_of(track: Track) -> list[Colour | None]:
@@ -358,9 +366,9 @@ def session_tracks(folder: Path) -> SessionTracks:
     session = load_session_folder(folder)
     raw = session.raw_samples()
     signals, data = signal_tracks(session, raw)
-    rec_start = session.fudi_time(REC_START)
-    place = placing(raw[session.meta["timestamp_row"]] if raw.size else None, session.fs, rec_start)
-    music = music_track(session, place, rec_start)
+    stamps = raw[session.meta["timestamp_row"]] if raw.size else None
+    place = placing(stamps, session.fs, session.music_began)
+    music = music_track(session, place)
     audio = [] if music is None else [music[0]]
     ends = [raw.shape[1] / session.fs if raw.size else 0.0]
     ends += [track.start_s + track.duration_s for track in audio]
@@ -373,7 +381,7 @@ def session_tracks(folder: Path) -> SessionTracks:
               for title, tracks in grouped]  # fmt: skip
     consoles = [Console(title=LOG, lines=session_log(folder, place)),
                 Console(title=EVENTS, lines=event_lines(session)),
-                Console(title=GENERATOR, lines=generator_lines(session))]  # fmt: skip
+                Console(title=MUSIC_CONSOLE, lines=music_lines(session, place))]  # fmt: skip
     drawn = [track for group in groups for track in group.tracks]
     colours: list[Colour | None] = [colour for track in drawn for colour in colours_of(track)]
     timeline = Timeline(

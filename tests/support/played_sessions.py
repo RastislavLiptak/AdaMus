@@ -1,5 +1,5 @@
 """Sessions played over a recording of the synthetic dataset, as the program leaves them: with
-the music the generator would have recorded and their metrics, and their logs on the clock of
+the music the player would have recorded and their metrics, and their logs on the clock of
 the session. Shared by the tests of the server and those of the interface."""
 
 import re
@@ -10,36 +10,38 @@ import soundfile
 
 from adamus import constants as c
 from adamus.evaluation.metrics import analyze
-from adamus.realtime.generator_messages import REC_START
 from adamus.realtime.session import STEP_LOG
-from adamus.session_format import log_time, read_log_line
+from adamus.session_format import EVENT_MUSIC_START, log_time, read_log_line
 from tests.support.finished_sessions import FinishedSession, config_with, synthetic_signals
 from tests.support.synthetic_dataset import Protocol, write_recording
 
 QUIET, LOUD = 0.05, 0.5  # of the stand-in music at rest and in focus
 TONE_HZ = 440
+MUSIC_RATE = 48000  # Hz
 
 STEP_NUMBER = re.escape(STEP_LOG.split("%d")[0]) + r"(\d+)"  # in a line a step logged
 
 
 def write_music(session: FinishedSession) -> None:
-    """A WAV for the time between "rec start;" and the end of the session, louder where the
-    weights asked for focus."""
-    start = next(e["t"] for e in session.events if e.get("msg") == REC_START)
+    """A WAV for the time from the start of the music to the end of the session, louder where
+    the music was told to follow focus."""
+    start = next(e["t"] for e in session.events if e["type"] == EVENT_MUSIC_START)
     end = session.events[-1]["t"]
-    times = np.arange(int((end - start) * c.AUDIO_RATE)) / c.AUDIO_RATE
-    sent = [(t["t_sent"] - start, t["w_focus"]) for t in session.ticks if t["t_sent"] is not None]
-    focus = np.interp(times, [s for s, _ in sent], [w for _, w in sent]) if sent else 0 * times
+    times = np.arange(int((end - start) * MUSIC_RATE)) / MUSIC_RATE
+    sent = [(t["t_sent"] - start, t["told"] == c.FOCUS)
+            for t in session.ticks if t["t_sent"] is not None]  # fmt: skip
+    told = [float(focus) for _, focus in sent]
+    focus = np.interp(times, [at for at, _ in sent], told) if sent else 0 * times
     wave = (QUIET + (LOUD - QUIET) * focus) * np.sin(2 * np.pi * TONE_HZ * times)
     soundfile.write(session.directory / c.FILE_AUDIO, np.column_stack([wave, wave]),
-                    c.AUDIO_RATE, subtype="PCM_16")  # fmt: skip
+                    MUSIC_RATE, subtype="PCM_16")  # fmt: skip
 
 
 def move_log_to_the_session_clock(session: FinishedSession) -> None:
     """The stand-in clock is not the time of day the log is written in, and the stand-in
     session runs faster than time: its lines move to the clock of the session, each step
     to when it was done, what came before the steps to the start and what came after them
-    to the end, as in a real session. Pd says it records when the music begins."""
+    to the end, as in a real session."""
     path = session.directory / c.FILE_LOG
     times = [session.events[0]["t"]]
     read = map(read_log_line, path.read_text(encoding="utf-8").splitlines())
@@ -52,9 +54,6 @@ def move_log_to_the_session_clock(session: FinishedSession) -> None:
             elif len(times) > 1:
                 times.append(session.events[-1]["t"])
             print(log_time(times[-1]), said, file=log)
-    began = next(e["t"] for e in session.events if e.get("msg") == REC_START)
-    with (session.directory / c.FILE_PD_LOG).open("w", encoding="utf-8") as log:
-        print(log_time(began), "mrt2~: recording.", file=log)
 
 
 def play_session(root: Path, name: str, protocol: Protocol, recording: str) -> FinishedSession:

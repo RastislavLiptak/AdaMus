@@ -30,8 +30,8 @@ final class SessionModel {
             if part != oldValue { pause() }
         }
     }
-    /// The sample of the session's music, played on its overview.
-    let sample = SamplePlayer()
+    /// The music the session played, played again on its overview.
+    let music = SoundPlayer()
     /// The parts shown so far: each stays built, so that switching back to one is at once.
     private(set) var opened: Set<SessionPart> = [.overview]
     private(set) var dashboard: Dashboard?
@@ -51,17 +51,17 @@ final class SessionModel {
         ]
     }
 
-    /// Nothing of the session plays: its timeline and the sample of its music are paused.
+    /// Nothing of the session plays: its timeline and its music are paused.
     func pause() {
         timeline?.pause()
-        if sample.playing { sample.pause() }
+        if music.playing { music.pause() }
     }
 
     /// The session is no longer chosen: nothing more is read, and its music stops.
     func stop() {
         for task in loading { task.cancel() }
         timeline?.stop()
-        sample.stop()
+        music.stop()
     }
 
     /// The dashboard, read again while the program is still working on it.

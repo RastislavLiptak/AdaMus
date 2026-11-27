@@ -2,6 +2,7 @@
 // how it keeps the list of sessions, waits for a dashboard being worked on, offers the form of
 // a new session and follows its run. The program is a stand-in here (StubProgram), as these are
 // the answers the real one gives only now and then.
+import AVFoundation
 import Foundation
 import Testing
 
@@ -17,6 +18,36 @@ private func dashboard(pending: String?) -> String {
          "highlights": [], "sections": []}
         """#
 }
+
+private func song(_ id: String, marked: [String] = ["REST", "FOCUS"]) -> String {
+    let parts = marked.enumerated().map { index, mark in
+        #"{"start_s": \#(index * 10), "end_s": \#(index * 10 + 10), "mark": "\#(mark)", "title": "\#(mark.capitalized)", "colour": "teal"}"#
+    }
+    return #"""
+        {"id": "\#(id)", "title": "\#(id.capitalized)", "artist": null, "length_s": 60, "loudness": [0.5, 1],
+         "parts": [\#(parts.joined(separator: ", "))], "cover": "7"}
+        """#
+}
+
+/// Ten seconds of silence in a file of its own: a sound a player plays on, unheard.
+func silence() throws -> URL {
+    let url = FileManager.default.temporaryDirectory.appending(path: "silence-\(UUID().uuidString).caf")
+    let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 8000, channels: 1))
+    let frames = AVAudioFrameCount(8000 * 10)
+    let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames))
+    buffer.frameLength = frames  // zeros
+    try AVAudioFile(forWriting: url, settings: format.settings).write(from: buffer)
+    return url
+}
+
+private func songPage(_ songs: String...) -> String {
+    #"{"total": \#(songs.count), "songs": [\#(songs.joined(separator: ", "))]}"#
+}
+
+private let marks = #"""
+    {"unmarked": "Unmarked",
+     "marks": [{"id": "REST", "title": "Rest", "colour": "teal"}, {"id": "FOCUS", "title": "Focus", "colour": "orange"}]}
+    """#
 
 private func runState(_ run: Int, _ phase: String, session: String? = nil, problem: String? = nil) -> String {
     func text(_ value: String?) -> String { value.map { #""\#($0)""# } ?? "null" }
@@ -35,7 +66,7 @@ struct APIClientTests {
         }
         await #expect(throws: APIError(message: "Field required. Too long.", status: 422)) {
             try await program.api.start(
-                SessionRequest(sourceId: "s", recording: nil, styleId: "folk", name: "n", output: "o"))
+                SessionRequest(sourceId: "s", recording: nil, songId: "one", name: "n", output: "o"))
         }
         await #expect(throws: APIError(message: "AdaMus did not answer as expected.", status: 500)) {
             try await program.api.runState()
@@ -46,14 +77,14 @@ struct APIClientTests {
         let program = StubProgram()
         program.answer("POST api/run", runState(1, "starting"))
         let request = SessionRequest(
-            sourceId: "dataset", recording: "evening", styleId: "rock", name: "Morning", output: "AirPods")
+            sourceId: "dataset", recording: "evening", songId: "Imagine", name: "Morning", output: "AirPods")
         _ = try await program.api.start(request)
         let call = try #require(program.made("POST api/run").first)
         #expect(call.token == program.api.token)
         let sent = try JSONSerialization.jsonObject(with: try #require(call.body)) as? [String: String]
         #expect(
             sent == [
-                "source_id": "dataset", "recording": "evening", "style_id": "rock", "name": "Morning",
+                "source_id": "dataset", "recording": "evening", "song_id": "Imagine", "name": "Morning",
                 "output": "AirPods",
             ])
     }
@@ -152,6 +183,149 @@ struct WorkspaceTests {
 }
 
 @MainActor
+struct LibraryTests {
+    private func read(_ songs: String...) async -> (StubProgram, LibraryModel) {
+        let program = StubProgram()
+        program.answer("GET api/marks", marks)
+        for answer in songs.isEmpty ? [songPage()] : songs { program.answer("GET api/songs", answer) }
+        let library = LibraryModel(api: program.api)
+        await library.load()
+        return (program, library)
+    }
+
+    @Test func theSongsAreListedWithWhatAPartCanBeMarkedAndAFailedLookSaysWhy() async {
+        let (program, library) = await read(songPage(song("one"), song("two")))
+        #expect(library.songs.map(\.id) == ["one", "two"] && library.marks.map(\.id) == ["REST", "FOCUS"])
+        #expect(library.unmarked == "Unmarked" && library.listProblem == nil)
+        program.answerFromNow("GET api/songs", status: 500, #"{"detail": "The library cannot be read."}"#)
+        await library.load()
+        #expect(library.listProblem == "The library cannot be read." && library.songs.map(\.id) == ["one", "two"])
+        #expect(program.made("GET api/marks").count == 1)  // they do not change
+    }
+
+    @Test func theSongsAreReadAPageAtATime() async {
+        let (program, library) = await read(#"{"total": 3, "songs": [\#(song("a")), \#(song("b"))]}"#)
+        // the second page was asked for, from where the first ended
+        #expect(program.made("GET api/songs").map { $0.query["offset"] } == ["0", "2"])
+        #expect(library.songs.map(\.id) == ["a", "b"])
+    }
+
+    @Test func aFileIsAnalysedIntoADraftAndOneRefusedSaysWhy() async throws {
+        let (program, library) = await read()
+        program.answer("POST api/drafts", song("d1", marked: []))
+        program.answer("POST api/drafts", status: 422, #"{"detail": "notes.txt: not a sound file."}"#)
+        await library.add(URL(filePath: "/music/one.mp3"))
+        #expect(library.draft?.id == "d1" && library.draft?.of == nil && library.adding == nil)
+        await library.discard()
+        await library.add(URL(filePath: "/music/notes.txt"))
+        #expect(library.draft == nil && library.problem == "notes.txt: not a sound file." && library.adding == nil)
+        let sent = try JSONSerialization.jsonObject(with: try #require(program.made("POST api/drafts").first?.body))
+        #expect(sent as? [String: String] == ["path": "/music/one.mp3"])
+    }
+
+    @Test func aStretchMarkedOrUnmarkedIsSentAndTheDraftComesBackAsTheProgramMarkedIt() async throws {
+        let (program, library) = await read()
+        program.answer("POST api/drafts", song("d1", marked: []))
+        program.answer("POST api/drafts/d1/marks", song("d1", marked: ["REST"]))
+        program.answer("POST api/drafts/d1/marks", song("d1", marked: []))
+        await library.add(URL(filePath: "/music/one.mp3"))
+        try await library.mark(1.5...9.0, as: "REST")
+        #expect(library.draft?.song.parts.map(\.mark) == ["REST"])
+        try await library.mark(0...10, as: nil)
+        #expect(library.draft?.song.parts.isEmpty == true)
+        let sent = try program.made("POST api/drafts/d1/marks").map {
+            try JSONSerialization.jsonObject(with: try #require($0.body)) as? NSDictionary
+        }
+        #expect(sent == [["start_s": 1.5, "end_s": 9.0, "mark": "REST"], ["start_s": 0, "end_s": 10]])  // nil left out
+    }
+
+    @Test func aDraftKeptIsASongOfTheLibrarySelectedAsItWasCalled() async throws {
+        let (program, library) = await read(songPage())
+        program.answer("POST api/drafts", song("d1"))
+        program.answer("POST api/drafts/d1/keep", song("one"))
+        program.answerFromNow("GET api/songs", songPage(song("one")))
+        await library.add(URL(filePath: "/music/one.mp3"))
+        try await library.keep(title: "One", artist: "", picture: URL(filePath: "/pictures/front.png"))
+        #expect(library.draft == nil && library.songs.map(\.id) == ["one"] && library.selection == "one")
+        let sent = try JSONSerialization.jsonObject(
+            with: try #require(program.made("POST api/drafts/d1/keep").first?.body))
+        // no artist: it is not known
+        #expect(sent as? [String: String] == ["title": "One", "picture": "/pictures/front.png"])
+        await library.discard()  // the editor closes: nothing is put aside any more
+        #expect(program.made("DELETE api/drafts/d1").isEmpty)
+    }
+
+    @Test func aDraftNotKeptStaysInTheEditorAndSaysWhy() async throws {
+        let (program, library) = await read(songPage(song("one")))
+        program.answer("POST api/songs/one/draft", song("d1"))
+        program.answer("POST api/drafts/d1/keep", status: 422, #"{"detail": "A song has a title."}"#)
+        await library.edit("one")
+        await #expect(throws: APIError(message: "A song has a title.", status: 422)) {
+            try await library.keep(title: " ", artist: "", picture: nil)
+        }
+        #expect(library.draft?.id == "d1" && library.draft?.of == "one")
+    }
+
+    @Test func aDraftPutAsideIsDeletedOnce() async {
+        let (program, library) = await read(songPage(song("one")))
+        program.answer("POST api/songs/one/draft", song("d1"))
+        program.answer("DELETE api/drafts/d1", status: 204, "")
+        await library.edit("one")
+        await library.discard()
+        await library.discard()
+        #expect(library.draft == nil && program.made("DELETE api/drafts/d1").count == 1)
+    }
+
+    @Test func aDeletedSongLeavesTheLibraryAndAFailedDeletionSaysWhy() async throws {
+        let (program, library) = await read(songPage(song("one"), song("two")), songPage(song("two")))
+        program.answer("DELETE api/songs/one", status: 204, "")
+        program.answer("DELETE api/songs/two", status: 404, #"{"detail": "No song two."}"#)
+        library.selection = "one"
+        library.askToDelete("one")
+        await library.delete(try #require(library.toDelete))
+        #expect(library.songs.map(\.id) == ["two"] && library.selection == nil && library.problem == nil)
+        await library.delete(try #require(library.songs.first))
+        #expect(library.problem == "No song two." && library.songs.map(\.id) == ["two"])
+    }
+}
+
+@MainActor
+struct SoundPlayerTests {
+    @Test func oneSoundAtATimePlaysAndIsPutSomewhereAnotherShowsItsStart() {
+        let player = SoundPlayer()
+        // playing as soon as it is asked to: what it plays is not read before this test ends
+        let one = FileManager.default.temporaryDirectory.appending(path: "one.wav")
+        let other = FileManager.default.temporaryDirectory.appending(path: "other.wav")
+        player.seek(to: 5, in: one)
+        #expect(!player.plays(one) && player.time(of: one) == 5 && player.time(of: other) == 0)
+        player.play(one)
+        #expect(player.plays(one) && !player.plays(other))
+        player.seek(to: 3, in: other)  // put somewhere, the other stops
+        #expect(!player.plays(one) && player.time(of: one) == 0 && player.time(of: other) == 3)
+        player.stop()
+    }
+
+    @Test func aStretchPlayedOverAndOverStopsTheSoundWhereItIsAndLeavesItThere() async throws {
+        let player = SoundPlayer()
+        defer { player.stop() }
+        let sound = try silence()
+        player.seek(to: 5, in: sound)
+        player.play(sound)
+        player.loop(1...1.3, in: sound)
+        #expect(!player.playing && player.time(of: sound) == 5, "stopped where it was")
+        let heard = try #require(player.loopTime(of: sound))
+        #expect(player.loops(sound) && (1...1.3).contains(heard), "heard within the stretch")
+        try await Task.sleep(for: .milliseconds(500))
+        player.loop(0.5...1.3, in: sound)  // dragged on
+        player.endLoop()
+        #expect(!player.playing && player.time(of: sound) == 5, "and still there")
+        #expect(!player.loops(sound) && player.loopTime(of: sound) == nil)
+        player.play(sound)
+        #expect(player.plays(sound) && player.time(of: sound) >= 5, "played on from there")
+    }
+}
+
+@MainActor
 struct SessionModelTests {
     @Test func aDashboardStillWorkedOnIsReadAgainUntilItIsDoneThenNoMore() async throws {
         let program = StubProgram()
@@ -183,15 +357,15 @@ struct SessionModelTests {
         let session = SessionModel(api: StubProgram().api, summary: SessionSummary(id: "a", name: "Session a"))
         defer { session.stop() }
         // playing as soon as it is asked to: what it plays is not read before this test ends
-        let sample = FileManager.default.temporaryDirectory.appending(path: "sample.wav")
-        session.sample.play(sample)
+        let sound = FileManager.default.temporaryDirectory.appending(path: "sound.wav")
+        session.music.play(sound)
         session.part = .overview
-        #expect(session.sample.playing, "the same part chosen again leaves it playing")
+        #expect(session.music.playing, "the same part chosen again leaves it playing")
         session.part = .timeline
-        #expect(!session.sample.playing, "the overview left, its sample is paused")
-        session.sample.play(sample)
+        #expect(!session.music.playing, "the overview left, its music is paused")
+        session.music.play(sound)
         session.stop()
-        #expect(!session.sample.playing && session.sample.time == 0, "another session chosen, it stops")
+        #expect(!session.music.playing && session.music.time == 0, "another session chosen, it stops")
     }
 
     @Test func aDashboardThatCannotBeReadSaysWhy() async throws {
@@ -212,9 +386,6 @@ struct NewSessionModelTests {
            {"id": "first", "title": "First", "live": false, "recordings": ["f1", "f2"]},
            {"id": "second", "title": "Second", "live": false, "recordings": ["s1", "s2"]}],
          "sources_hint": "No source.",
-         "styles": [
-           {"id": "folk", "title": "Folk"},
-           {"id": "rock", "title": "Rock"}],
          "name_pattern": "[a-z]+", "name_hint": "Small letters only."}
         """#
     private static let fine = #"{"warning": null, "problem": null}"#
@@ -223,14 +394,26 @@ struct NewSessionModelTests {
          "system": "Speakers", "hint": "Connect headphones."}
         """#
 
-    private func opened(refresh: (status: Int, body: String) = (200, form)) async -> (StubProgram, NewSessionModel) {
+    private static let songs = songPage(song("first"), song("second"))
+
+    /// The form opened, and the song ``chosen`` chosen in the library, as its window reads it.
+    private func opened(
+        refresh: (status: Int, body: String)? = nil, songs: String = songs, chosen: Song.ID? = "first"
+    ) async -> (StubProgram, NewSessionModel) {
         let program = StubProgram()
         program.answer("GET api/new-session", Self.form)
+        let refresh = refresh ?? (200, Self.form)
         program.answer("POST api/new-session/refresh", status: refresh.status, refresh.body)
         program.answer("GET api/sources/headset/check", Self.fine)  // the first source, chosen at first
         program.answer("GET api/audio-outputs", Self.outputs)
-        let model = NewSessionModel(api: program.api)
+        program.answer("GET api/marks", marks)
+        program.answer("GET api/songs", songs)
+        let model = NewSessionModel(api: program.api, library: LibraryModel(api: program.api))
         await model.open()
+        if let chosen {
+            await model.library.load()
+            model.choose(song: chosen)
+        }
         return (program, model)
     }
 
@@ -245,39 +428,57 @@ struct NewSessionModelTests {
         #expect((sent as? [String: String?])?["output"] == "TV")
     }
 
-    @Test func theFirstStyleIsChosenAtFirstAndTheSessionIsAskedForWithTheOneChosen() async throws {
-        let (program, model) = await opened()
-        #expect(model.style?.id == "folk")
-        model.choose(style: "rock")
+    @Test func noSongIsChosenAtFirstAndTheLibraryChoosesOneWhichTheSessionIsAskedFor() async throws {
+        let (program, model) = await opened(chosen: nil)
         model.name = "morning"
+        #expect(model.song == nil && !model.canStart)
+        #expect(program.made("GET api/songs").isEmpty, "the library is read where it is shown")
+        await model.library.load()
+        model.askLibraryForSong()
+        #expect(model.library.selection == nil)  // none chosen: none selected in the library
+        model.library.choose?("second")
+        #expect(model.song?.id == "second" && model.canStart)
+        model.askLibraryForSong()
+        #expect(model.library.selection == "second")  // the one chosen, selected again
         program.answer("POST api/run", runState(1, "starting"))
         _ = await model.start()
         let sent = try JSONSerialization.jsonObject(with: try #require(program.made("POST api/run").first?.body))
-        #expect((sent as? [String: String?])?["style_id"] == "rock")
+        #expect((sent as? [String: String?])?["song_id"] == "second")
     }
 
-    @Test func aStyleChosenPlaysASampleOfItselfWhichTheButtonStopsAndPlaysAgain() async {
+    @Test func aSongChosenThatIsDeletedIsChosenNoMoreAndNoSessionStarts() async {
         let (program, model) = await opened()
-        #expect(!model.playingSample)  // the first style, chosen at first, unheard
-        model.choose(style: "rock")
-        #expect(model.style?.id == "rock" && model.playingSample)
-        model.playOrStopSample()
-        #expect(!model.playingSample)
-        model.playOrStopSample()
-        #expect(model.playingSample)
-        model.choose(style: "folk")  // in place of the one that played
-        #expect(model.style?.id == "folk" && model.playingSample)
+        model.choose(song: "second")
+        model.name = "morning"
+        program.answerFromNow("GET api/songs", songPage(song("first")))
+        await model.library.load()
+        #expect(model.song == nil && !model.canStart)  // not another in its place
+        model.choose(song: "first")
+        #expect(model.song?.id == "first" && model.canStart)
+    }
+
+    @Test func whatTheLibraryPlaysStopsAsTheSessionStarts() async throws {
+        let (program, model) = await opened()
+        model.library.player.play(try silence())  // a sound that plays on, unheard
+        #expect(model.library.player.playing)
         model.name = "morning"
         program.answer("POST api/run", runState(1, "starting"))
         _ = await model.start()
-        #expect(!model.playingSample)  // the session's own music is to be heard
+        #expect(!model.library.player.playing)  // the session's own music is to be heard
     }
 
-    @Test func aSampleIsAskedForWithTheTokenInItsAddress() async {
-        let (program, _) = await opened()
-        let parts = URLComponents(url: program.api.sampleURL(of: "rock"), resolvingAgainstBaseURL: false)
-        #expect(parts?.path == "/api/styles/rock/sound")
-        #expect(parts?.queryItems == [URLQueryItem(name: "token", value: program.api.token)])
+    @Test func aSongAndItsCoverAreAskedForWithTheTokenAndTheCoverWithItsVersionInTheirAddress() async throws {
+        let (program, model) = await opened()
+        let (sound, cover) = program.api.song(try #require(model.library.songs.first { $0.id == "second" }))
+        let token = URLQueryItem(name: "token", value: program.api.token)
+        let asked = [
+            (sound, "/api/songs/second/sound", [token]),
+            (try #require(cover), "/api/songs/second/cover", [token, URLQueryItem(name: "version", value: "7")]),
+        ]
+        for (url, path, query) in asked {
+            let parts = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            #expect(parts?.path == path && parts?.queryItems == query)
+        }
     }
 
     @Test func aRunWhoseSessionNeverStartedIsNotSaidToHaveEnded() async {

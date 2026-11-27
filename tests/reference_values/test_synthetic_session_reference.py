@@ -124,9 +124,9 @@ class TestTheRawFileIsEnough:
         )
         assert len(again.ticks) == len(session.ticks) == 953
         for ours, theirs in zip(again.ticks, session.ticks, strict=True):
-            for key in ("k", "n_end", "valid", "block_index", "full_window", "f_held"):
+            for key in ("k", "n_end", "valid", "block_index", "full_window", "f_held", "told"):
                 assert ours[key] == theirs[key]
             assert (ours["score"] is None) is (theirs["score"] is None)
-            for key in ("score", "f", "w_idle", "w_focus"):
+            for key in ("score", "f"):
                 if ours[key] is not None:
                     assert ours[key] == pytest.approx(theirs[key], abs=1e-4)

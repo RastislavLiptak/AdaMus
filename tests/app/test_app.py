@@ -111,7 +111,7 @@ def rare_answers():
         "dashboard": Dashboard(
             name="name", problem="problem", pending="pending", summary=[], failures=["failure"],
             caution="caution",
-            highlights=[], music=None, sections=[],
+            highlights=[], song=None, sections=[],
         ).model_dump(mode="json"),
         "source_check": SourceCheck(warning="warning", problem="problem").model_dump(mode="json"),
         "run_state": RunState(

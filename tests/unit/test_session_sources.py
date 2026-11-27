@@ -37,9 +37,9 @@ class TestSessionConfig:
         result = session_config(config, data / "zeta" / "one")
         assert result.protocol == [Block("REST", 5), Block("FOCUS", 5)]
         assert result.raw["protocol"] == [["REST", 5], ["FOCUS", 5]]
-        assert (result.board, result.generator, result.poll_s) == (
+        assert (result.board, result.timeouts, result.poll_s) == (
             config.board,
-            config.generator,
+            config.timeouts,
             config.poll_s,
         )
 

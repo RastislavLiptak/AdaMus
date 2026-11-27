@@ -42,9 +42,8 @@ struct RealProgramTests {
 
     @Test func theSessionsTheirDashboardTheirTimelineTheirSamplesAndSound() async throws {
         let api = RealProgram.api
-        let page = try await api.sessions(from: 0)
-        let played = try #require(page.sessions.first { $0.name == "morning_focus" })  // as tests/app played it
-        #expect(page.total == page.sessions.count)
+        // as tests/app played it
+        let played = try #require(try await api.sessions().first { $0.name == "morning_focus" })
 
         let dashboard = try await api.dashboard(of: played.id)
         #expect(dashboard.name == played.name)
@@ -79,7 +78,7 @@ struct RealProgramTests {
 
     @Test func theHeadAndTheElectrodesOfASessionOnItAreReadFromTheProgram() async throws {
         let api = RealProgram.api
-        let played = try #require(try await api.sessions(from: 0).sessions.first { $0.name == "morning_focus" })
+        let played = try #require(try await api.sessions().first { $0.name == "morning_focus" })
         let head = try await api.head()
         #expect(head.vertices.count % 3 == 0 && head.triangles.count % 3 == 0 && !head.triangles.isEmpty)
         #expect(Int(head.triangles.max() ?? 0) < head.vertices.count / 3)
@@ -94,7 +93,7 @@ struct RealProgramTests {
 
     @Test func aPartOfTheTimelineIsWrittenOutByTheProgram() async throws {
         let api = RealProgram.api
-        let played = try #require(try await api.sessions(from: 0).sessions.first { $0.name == "morning_focus" })
+        let played = try #require(try await api.sessions().first { $0.name == "morning_focus" })
         let excerpt = try await api.excerpt(of: played.id, from: 10, to: 20)
         let data = try #require(try JSONSerialization.jsonObject(with: Data(excerpt.text.utf8)) as? [String: Any])
         #expect((data["session"] as? [String: Any])?["name"] as? String == "morning_focus")
@@ -106,7 +105,7 @@ struct RealProgramTests {
     /// is there somewhere, read under the name the program gives it.
     @Test func everyValueOfTheTimelineAndDashboardThatMayLackIsReadWhereTheProgramGivesIt() async throws {
         let api = RealProgram.api
-        let played = try #require(try await api.sessions(from: 0).sessions.first { $0.name == "morning_focus" })
+        let played = try #require(try await api.sessions().first { $0.name == "morning_focus" })
         let timeline = try await api.timeline(of: played.id)
         let tracks = timeline.groups.flatMap(\.tracks)
         let curves = tracks.compactMap { if case .curve(let track) = $0 { track } else { nil } }
@@ -140,9 +139,11 @@ struct RealProgramTests {
 
     @Test func aSessionWithTheHeadsetRunsUntilItIsStoppedAndIsDeletedAgain() async throws {
         let api = RealProgram.api
-        let form = NewSessionModel(api: api)
+        let form = NewSessionModel(api: api, library: LibraryModel(api: api))
         await form.open()
         #expect(form.source?.live == true && form.recording == nil)  // the headset has no recordings
+        await form.library.load()
+        form.choose(song: try #require(form.library.songs.first).id)
         form.name = "live"
         let started = try #require(await form.start())
         #expect(form.problem == nil)
@@ -162,14 +163,52 @@ struct RealProgramTests {
 
     @Test func aCallWithoutTheTokenFindsNothing() async throws {
         let stranger = APIClient(address: RealProgram.api.address, token: "guess")
-        await #expect(throws: APIError.self) { try await stranger.sessions(from: 0) }
+        await #expect(throws: APIError.self) { try await stranger.sessions() }
+    }
+
+    @Test func theLibraryIsReadAndASongIsChangedInADraftThenGivenBack() async throws {
+        let api = RealProgram.api
+        let library = LibraryModel(api: api)
+        await library.load()
+        #expect(library.listProblem == nil && library.marks.map(\.title) == ["Rest", "Focus"])
+        #expect(library.unmarked == "Unmarked")
+        let song = try #require(library.songs.first { $0.title == "Stand-in Song" })
+        #expect(song.parts.map(\.title) == ["Rest", "Focus"])
+        // marked where it is put, in a draft, which leaves the song as it is until it is kept
+        await library.edit(song.id)
+        try await library.mark(1.2...3.9, as: "FOCUS")
+        let marked = try #require(library.draft?.song)
+        #expect(marked.parts.map(\.title) == ["Rest", "Focus", "Rest", "Focus"])
+        #expect(marked.parts[1].startS == 1.2 && marked.parts[1].endS == 3.9)
+        let (draftSound, _) = api.draftFiles(marked)
+        let draftLength = try await AVURLAsset(url: draftSound).load(.duration).seconds
+        #expect(abs(draftLength - song.lengthS) < 0.1)
+        await library.discard()
+        await library.load()
+        #expect(library.songs.first { $0.id == song.id }?.parts == song.parts)
+        // what is not a song is refused, as the program says why
+        await library.add(try silence())
+        #expect(library.draft == nil && library.problem?.contains("no beat") == true)
+        // kept under another title and artist, then given back as it was
+        await library.edit(song.id)
+        try await library.keep(title: "Tokyo", artist: "The Clause", picture: nil)
+        #expect(library.selected.map { [$0.title, $0.artist] } == ["Tokyo", "The Clause"])
+        #expect(library.selected?.cover == song.cover && library.selected?.parts == song.parts)  // its own picture
+        await library.edit(song.id)
+        try await library.keep(title: song.title, artist: "", picture: nil)
+        // its sound and picture, as a player and an image ask for them, without a header
+        let (sound, cover) = api.song(song)
+        let length = try await AVURLAsset(url: sound).load(.duration).seconds
+        #expect(abs(length - song.lengthS) < 0.1)
+        let (picture, given) = try await URLSession.shared.data(from: try #require(cover))
+        #expect((given as? HTTPURLResponse)?.statusCode == 200 && picture.starts(with: [0x89, 0x50, 0x4E, 0x47]))
     }
 
     @Test func aNewSessionFromTheFormRunsToItsEndAndIsDeletedAgain() async throws {
         let api = RealProgram.api
-        let before = try await api.sessions(from: 0).total
+        let before = try await api.sessions().count
 
-        let form = NewSessionModel(api: api)
+        let form = NewSessionModel(api: api, library: LibraryModel(api: api))
         await form.open()
         #expect(form.problem == nil)
         #expect(form.form?.sources.first?.live == true)  // the stand-in headset, found and first
@@ -177,14 +216,14 @@ struct RealProgramTests {
         #expect(form.outputs?.outputs.map(\.id) == ["TV", "MacBook Pro Speakers"])
         #expect(form.output?.id == "MacBook Pro Speakers")
         form.chosenOutput = "TV"
-        // the styles of the configuration, and a sample of one, asked for without a header
-        #expect(form.form?.styles.map(\.id) == ["folk", "rock", "country", "koto", "oud"])
-        #expect(form.style?.id == "folk")
-        form.choose(style: "rock")
-        form.stopSample()
-        let (sample, answer) = try await URLSession.shared.data(from: api.sampleURL(of: "rock"))
-        #expect((answer as? HTTPURLResponse)?.statusCode == 200 && sample.count > 1_000_000)
-        #expect(sample.prefix(4) == Data("RIFF".utf8))  // a WAV, which the player and the program read
+        // no song until one is chosen in the library, played as it is asked for without a header
+        #expect(form.song == nil && !form.canStart)
+        await form.library.load()
+        let song = try #require(form.library.songs.first { $0.title == "Stand-in Song" })
+        form.choose(song: song.id)
+        let (sound, answer) = try await URLSession.shared.data(from: api.song(song).sound)
+        #expect((answer as? HTTPURLResponse)?.statusCode == 200 && sound.count > 100_000)
+        #expect(sound.prefix(4) == Data("RIFF".utf8))  // a WAV, which the player and the program read
         form.chosenSource = form.form?.sources.first { !$0.live }?.id
         await form.checkChoice()
         #expect(form.recording != nil && form.check?.problem == nil)
@@ -205,17 +244,16 @@ struct RealProgramTests {
         await run.follow()
         #expect(run.problem == nil && run.state.problem == nil)
         let id = try #require(run.state.sessionId)
-        // its overview has the music it played, with the sample and the cover it kept, which
-        // a player and an image take as they are
-        let music = try #require(try await api.dashboard(of: id).music)
-        #expect(music.title == "Rock" && music.parts.map(\.title) == ["At Rest", "In Focus"])
-        #expect(music.parts[1].sound.contains("Power chords") && !music.loudness.isEmpty)
-        let (kept, cover) = api.music(of: id)
+        // its overview has the song it kept, as the library had it, which a player and an image
+        // take as they are
+        let source = try #require(try await api.dashboard(of: id).song)
+        #expect(source.title == "Stand-in Song" && source.cover != nil && source.parts == song.parts)
+        let (kept, cover) = api.song(ofSession: id, source)
         let length = try await AVURLAsset(url: kept).load(.duration).seconds
-        #expect(abs(length - music.lengthS) < 0.1)
+        #expect(abs(length - source.lengthS) < 0.1)
         // played from where it was put, to its end, then again from its beginning
-        let player = SamplePlayer()
-        player.seek(to: music.lengthS - 0.3)
+        let player = SoundPlayer()
+        player.seek(to: source.lengthS - 0.3, in: kept)
         player.play(kept)
         for _ in 0..<50 where player.playing { try await Task.sleep(for: .milliseconds(100)) }
         #expect(!player.playing && player.time == 0, "played to its end within 5 s, from where it was put")
@@ -223,9 +261,10 @@ struct RealProgramTests {
         for _ in 0..<20 where player.time == 0 { try await Task.sleep(for: .milliseconds(100)) }
         #expect(player.playing && player.time > 0 && player.time < 2.5, "and again from its beginning")
         // put elsewhere as it plays, it is there at once, not where it was until the seek lands
-        player.seek(to: 10)
+        player.seek(to: 10, in: kept)
         #expect(player.time == 10)
-        try await Task.sleep(for: .milliseconds(300))
+        // its clock goes once the audio output plays, which takes it a moment to wake up
+        for _ in 0..<50 where player.time <= 10 { try await Task.sleep(for: .milliseconds(100)) }
         #expect(player.time > 10 && player.time < 11, "and plays on from there")
         // paused, it stays where it stopped
         player.pause()
@@ -233,18 +272,18 @@ struct RealProgramTests {
         try await Task.sleep(for: .milliseconds(300))
         #expect(!player.playing && paused > 10 && player.time == paused, "paused where it stopped")
         player.stop()
-        let (picture, given) = try await URLSession.shared.data(from: cover)
+        let (picture, given) = try await URLSession.shared.data(from: try #require(cover))
         #expect((given as? HTTPURLResponse)?.statusCode == 200 && picture.starts(with: [0x89, 0x50, 0x4E, 0x47]))
         // listed under the name it was given (the stand-in computer's clock starts in 1970, so
         // which session is newest says nothing here)
-        let listed = try await api.sessions(from: 0).sessions
+        let listed = try await api.sessions()
         #expect(listed.contains(SessionSummary(id: id, name: "Karel Jedlička 8")))
 
         let workspace = Workspace(api: api)
         await workspace.load()
         await workspace.delete(try #require(workspace.sessions.first { $0.id == id }))
         #expect(workspace.problem == nil)
-        #expect(try await api.sessions(from: 0).total == before)
+        #expect(try await api.sessions().count == before)
     }
 }
 

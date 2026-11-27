@@ -16,10 +16,9 @@ from scipy.stats import mannwhitneyu, spearmanr
 from adamus import constants as c
 from adamus.errors import AdamusError
 from adamus.evaluation.session_reader import NOT_COMPLETE, SessionFolder, load_session_folder
-from adamus.realtime.generator_messages import REC_START, REC_STOP
+from adamus.session_format import EVENT_MUSIC_END
 
 Result = dict[str, Any]  # a part of metrics.json
-DROPOUT_SAMPLES = round(c.MODEL_FRAME_S * c.AUDIO_RATE)  # silence this long is a dropout
 ONSET_HOP = 512  # audio samples between two values of the onset envelope
 ONSET_FFT = 2048  # audio samples of one spectrum of the onset envelope (librosa's default)
 AUDIO_BLOCK = 1 << 20  # audio frames read, or spectra computed, at a time: a session has
@@ -115,28 +114,11 @@ def step_regularity(session: SessionFolder) -> dict[str, float] | None:
     return summary_of(np.diff(sent).tolist())
 
 
-def dropouts(silent: np.ndarray, rate: int) -> dict[str, Any]:
-    """Runs of at least one model frame where every channel is exactly zero.
-
-    ``silent`` tells it of every frame. Counting starts at the first non-zero sample.
-    """
-    if silent.all():
-        return {"count": 0, "total_s": 0.0, "first_sound_s": None}
-    first = int(np.argmin(silent))
-    edges = np.diff(np.pad(silent[first:].astype(np.int8), 1))  # +1 run starts, -1 run ends
-    lengths = np.flatnonzero(edges == -1) - np.flatnonzero(edges == 1)
-    long_runs = lengths[lengths >= DROPOUT_SAMPLES]
-    return {
-        "count": len(long_runs),
-        "total_s": float(long_runs.sum() / rate),
-        "first_sound_s": first / rate,
-    }
-
-
-def recording_length_error(session: SessionFolder, audio_s: float) -> float | None:
-    """Length of audio.wav minus the time between ``rec start`` and ``rec stop``."""
-    start, stop = session.fudi_time(REC_START), session.fudi_time(REC_STOP)
-    return None if start is None or stop is None else audio_s - (stop - start)
+def dropouts(session: SessionFolder) -> dict[str, Any] | None:
+    """How often the output played a block of the music before it was ready; None when the
+    music never began, or the session did not end it."""
+    ended = session.event(EVENT_MUSIC_END)
+    return None if ended is None else {"count": ended.get("dropouts")}
 
 
 def best_lag(
@@ -172,15 +154,15 @@ def best_lag(
 def music_response(session: SessionFolder, mono: np.ndarray, rate: int) -> Result | None:
     """How the music follows the control: the onset strength of the audio against f.
 
-    A step counts from the moment its weights were sent; a step that kept the
-    f of the one before sent nothing and counts from the end of its processing.
+    A step counts from the moment the music was told its state; a step that kept the
+    f of the one before told nothing and counts from the end of its processing.
     """
-    rec_start = session.fudi_time(REC_START)
+    began = session.music_began
     ticks = [tick for tick in session.ticks if tick["f"] is not None]
-    if rec_start is None or len(mono) == 0:
+    if began is None or len(mono) == 0:
         return None
     f = np.array([tick["f"] for tick in ticks])
-    at = np.array([tick["t_sent"] or tick["t_proc_end"] for tick in ticks]) - rec_start
+    at = np.array([tick["t_sent"] or tick["t_proc_end"] for tick in ticks]) - began
     envelope = librosa.onset.onset_strength(
         S=librosa.power_to_db(mel_spectrogram(mono, rate)), sr=rate, hop_length=ONSET_HOP
     )
@@ -217,29 +199,26 @@ def mono_of(pcm: np.ndarray) -> np.ndarray:
     return mono
 
 
-def read_audio(path: Path) -> tuple[np.ndarray, np.ndarray, int]:
-    """The audio as one channel, which frames are silent, and the rate: read a block at a
-    time, never as two channels at once."""
+def read_audio(path: Path) -> tuple[np.ndarray, int]:
+    """The audio as one channel, and its rate: read a block at a time, never as two channels
+    at once."""
     with soundfile.SoundFile(path) as audio:
         mono = np.empty(audio.frames, dtype=np.float32)
-        silent = np.empty(audio.frames, dtype=bool)
         for start in range(0, audio.frames, AUDIO_BLOCK):
             pcm = audio.read(AUDIO_BLOCK, dtype="int16", always_2d=True)
             mono[start : start + len(pcm)] = mono_of(pcm)
-            silent[start : start + len(pcm)] = ~pcm.any(axis=1)
-        return mono, silent, audio.samplerate
+        return mono, audio.samplerate
 
 
 def audio_metrics(session: SessionFolder) -> dict[str, Any]:
-    """The three audio metrics; nulls when there is no audio.wav, or when Pd stopped before
-    it wrote one that can be read."""
+    """The metrics of the music: how often it dropped out, and how it followed the control;
+    the second null when there is no audio.wav that can be read."""
     try:
-        mono, silent, rate = read_audio(session.directory / c.FILE_AUDIO)
+        mono, rate = read_audio(session.directory / c.FILE_AUDIO)
     except soundfile.SoundFileError:  # also when the file is not there
-        return {"audio_dropouts": None, "recording_length_error_s": None, "music_response": None}
+        return {"audio_dropouts": dropouts(session), "music_response": None}
     return {
-        "audio_dropouts": dropouts(silent, rate),
-        "recording_length_error_s": recording_length_error(session, len(mono) / rate),
+        "audio_dropouts": dropouts(session),
         "music_response": music_response(session, mono, rate),
     }
 

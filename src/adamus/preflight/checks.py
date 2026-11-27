@@ -1,10 +1,10 @@
 """The checklist run when the program starts, which the app shows as it goes.
 
 The checks run top to bottom; one that fails ends the program. What the program obtains
-itself (the focus detector, the music generator) is made when it is missing,
-always the same way: its output goes to a log in its folder, and then it is
-looked at again. The sources of a session (the headset, the datasets) are not checked here:
-the form of a new session looks for them (server/new_session.py).
+itself (the focus detector) is made when it is missing: its output goes to a log in its
+folder, and then it is looked at again. The sources of a session (the headset, the datasets),
+its song and the audio output it plays on are not checked here: the form of a new session
+offers them as they are when it is filled in (server/new_session.py).
 """
 
 import time
@@ -15,20 +15,15 @@ from urllib.parse import urlparse
 
 from adamus import constants as c
 from adamus.activity_log import ACTION_PREFLIGHT, ActivityLog
-from adamus.audio_outputs import AudioOutput
-from adamus.config import Config, Generator, load_config
+from adamus.config import Config, load_config
 from adamus.detection.focus_detector import load_models
 from adamus.detection.focus_training import DATASET_URL
 from adamus.errors import AdamusError
-from adamus.machine import Machine, RunningGenerator
-from adamus.realtime.music_generator import PATCH_TEMPLATE
+from adamus.machine import Machine
 
 CONFIGURATION = "Configuration"
 STORAGE = "Storage"
 FOCUS_DETECTOR = "Focus detector"
-AUDIO_OUTPUT = "Audio output"
-GENERATOR_FILES = "Generator files"
-GENERATOR_START = "Generator start"
 
 # The states of a check.
 PENDING, RUNNING, PASSED, FAILED = "pending", "running", "passed", "failed"
@@ -42,9 +37,6 @@ HOW_TO_FIX = {
     STORAGE: "Start the program in a folder you can write to.",
     FOCUS_DETECTOR: "Read the log named above; the first training downloads its data from"
     f" {urlparse(DATASET_URL).hostname}, so it needs the internet.",
-    AUDIO_OUTPUT: f"Set the output device to {c.AUDIO_RATE} Hz in Audio MIDI Setup.",
-    GENERATOR_FILES: "Install what is named above (cmake e.g. with Homebrew), or read the"
-    " installation log named there. Check generator.folder and model.",
 }
 
 
@@ -69,7 +61,7 @@ def _focus_model_problem() -> str:
 
 
 class Preflight:
-    """Runs the checks and keeps what they found: the configuration and the started generator."""
+    """Runs the checks and keeps what they found: the configuration."""
 
     def __init__(
         self, config_path: Path, machine: Machine, shown: Shown, activity_log: ActivityLog
@@ -78,16 +70,8 @@ class Preflight:
         self._machine = machine
         self._shown = shown
         self._activity_log = activity_log
-        self.checks = [
-            Check(name)
-            for name in (
-                CONFIGURATION, STORAGE, FOCUS_DETECTOR, AUDIO_OUTPUT, GENERATOR_FILES,
-                GENERATOR_START,
-            )
-        ]  # fmt: skip
+        self.checks = [Check(name) for name in (CONFIGURATION, STORAGE, FOCUS_DETECTOR)]
         self.config: Config | None = None
-        self.audio_output: AudioOutput | None = None  # the one the system played on, at the start
-        self.generator: RunningGenerator | None = None
 
     def run(self) -> bool:
         """Run all checks; True when every required one passed."""
@@ -95,30 +79,21 @@ class Preflight:
         self._require(CONFIGURATION, self._configuration, [])
         self._require(STORAGE, self._storage, [])
         self._require(FOCUS_DETECTOR, self._focus_detector, [CONFIGURATION])
-        self._require(AUDIO_OUTPUT, self._audio_output, [])
-        self._require(GENERATOR_FILES, self._generator_files, [CONFIGURATION])
-        self._require(
-            GENERATOR_START, self._generator_start, [AUDIO_OUTPUT, GENERATOR_FILES],
-            running="loading model ...",
-        )  # fmt: skip
         return all(check.status == PASSED for check in self.checks)
 
     def _check(self, name: str) -> Check:
         return next(check for check in self.checks if check.name == name)
 
-    def _require(
-        self, name: str, check_method: Callable[[], str], needs: list[str], running: str = ""
-    ) -> None:
+    def _require(self, name: str, check_method: Callable[[], str], needs: list[str]) -> None:
         """Run one required check, unless a check it needs did not pass.
 
-        ``check_method`` returns what it found, or raises with the cause; ``running`` is
-        what the check shows meanwhile.
+        ``check_method`` returns what it found, or raises with the cause.
         """
         check = self._check(name)
         if any(self._check(needed).status != PASSED for needed in needs):
             self._finish(check, SKIPPED, SKIPPED, time.monotonic())
             return
-        check.status, check.detail = RUNNING, running
+        check.status, check.detail = RUNNING, ""
         self._show()
         started = time.monotonic()
         try:
@@ -159,13 +134,6 @@ class Preflight:
         trial.unlink()
         return f"{root}/ writable"
 
-    def _audio_output(self) -> str:
-        output = self._machine.audio_output()
-        if output.rate != c.AUDIO_RATE:
-            raise AdamusError(f"{output.name}, {output.rate:g} Hz (need {c.AUDIO_RATE} Hz)")
-        self.audio_output = output
-        return f"{output.name}, {c.AUDIO_RATE} Hz"
-
     def _obtained(
         self, name: str, doing: str, missing: Callable[[], str], make: Callable[[], Path]
     ) -> bool:
@@ -189,36 +157,3 @@ class Preflight:
         )  # fmt: skip
         people = len(load_models().raw["trained_on"]["people"])
         return ("trained: " if made else "") + f"{c.FOCUS_MODEL_PATH}, {people} people"
-
-    def _generator_files(self) -> str:
-        """The files of the generator; missing ones are installed first."""
-        assert self.config is not None
-        generator = self.config.generator
-        made = self._obtained(
-            GENERATOR_FILES, "installing the music generator",
-            lambda: self._missing_generator_files(generator),
-            lambda: self._machine.install_generator(generator),
-        )  # fmt: skip
-        return ("installed: " if made else "") + ", ".join(self._generator_paths(generator))
-
-    @staticmethod
-    def _generator_paths(generator: Generator) -> dict[str, Path]:
-        return {
-            "pd": generator.pd_binary,
-            "mrt2~": generator.external_file,
-            "patch": PATCH_TEMPLATE,
-            generator.model: generator.model_file,
-        }
-
-    def _missing_generator_files(self, generator: Generator) -> str:
-        """The files of the generator that are not there, as a list; '' when all are."""
-        files = [*self._generator_paths(generator).values(), *generator.asset_files]
-        return ", ".join(str(path) for path in files if not path.is_file())
-
-    def _generator_start(self) -> str:
-        assert self.config is not None and self.audio_output is not None
-        # known before it starts, so that the end of the program stops it also when the start is
-        # interrupted half way
-        self.generator = self._machine.make_generator(self.config, self._activity_log.write)
-        self.generator.start(self.audio_output.name)
-        return f"model loaded, playing on {self.audio_output.name}"

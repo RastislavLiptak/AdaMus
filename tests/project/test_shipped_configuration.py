@@ -7,15 +7,11 @@ number is noticed here and not in the laboratory.
 
 import re
 import tomllib
-from pathlib import Path
 
-import pytest
-import soundfile
 from brainflow.board_shim import BoardShim
 
 import adamus
 from adamus import constants as c
-from adamus import machine
 from adamus.config import load_config
 from adamus.datasets import datasets_in
 from adamus.detection.signal_processing import Steps
@@ -24,7 +20,6 @@ from tests.support.project_paths import CONFIG_FILE, ROOT
 CONFIG = load_config(CONFIG_FILE)
 FS = BoardShim.get_sampling_rate(CONFIG.board.id)
 GIT_IGNORED = (ROOT / ".gitignore").read_text().splitlines()
-INSTALL_SCRIPT = (ROOT / machine.INSTALL_SCRIPT).read_text()
 PROJECT = tomllib.loads((ROOT / "pyproject.toml").read_text())
 README = (ROOT / "README.md").read_text()
 
@@ -44,58 +39,17 @@ class TestDetector:
 
     def test_the_focus_model_is_not_shipped_the_program_trains_it(self):
         assert PROJECT["tool"]["setuptools"]["package-data"] == {
-            "adamus.realtime": ["pure_data_patch.pd"],
-            "adamus.server": ["head_model.json", "styles/*/*"],  # the head; the styles' files
+            "adamus.server": ["head_model.json"],  # the head of the electrodes
         }
         assert not list((ROOT / "src").rglob(c.FOCUS_MODEL_FILE))
 
 
-def png_size(path):
-    """Width and height of a PNG, from its header."""
-    data = path.read_bytes()
-    assert data[:8] == b"\x89PNG\r\n\x1a\n" and data[12:16] == b"IHDR"
-    return int.from_bytes(data[16:20]), int.from_bytes(data[20:24])
-
-
-class TestStyles:
-    def test_every_style_has_a_folder_of_a_sample_and_a_cover_and_nothing_else_lies_there(self):
-        shipped = sorted(path.relative_to(c.STYLE_FILES) for path in c.STYLE_FILES.rglob("*"))
-        expected = sorted(
-            path
-            for style in CONFIG.styles
-            for path in (
-                Path(style.id),
-                Path(style.id, c.FILE_SAMPLE),
-                Path(style.id, c.FILE_COVER),
-            )
-        )
-        assert shipped == expected
-
-    def test_a_sample_is_the_rest_then_the_focus_and_a_cover_a_square_picture(self):
-        for style in CONFIG.styles:
-            sample = soundfile.info(c.STYLE_FILES / style.id / c.FILE_SAMPLE)
-            # its rest, then its focus: the samples were recorded so, with these settings
-            assert sample.duration == pytest.approx(2 * c.SAMPLE_FOCUS_FROM_S, abs=0.1), style.id
-            assert png_size(c.STYLE_FILES / style.id / c.FILE_COVER) == (512, 512), style.id
-
-    def test_the_focus_is_never_quieter_than_the_rest(self):
-        for style in CONFIG.styles:
-            assert style.rest_volume_db <= style.focus_volume_db, style.id
-
-
 class TestTiming:
-    def test_several_polls_fit_into_one_frame_of_the_model(self):
-        """Otherwise a dropout of one frame could hide between two polls."""
-        assert CONFIG.poll_s <= c.MODEL_FRAME_S * 2
-
     def test_polling_adds_at_most_a_tenth_of_a_step_of_latency(self):
         assert CONFIG.poll_s <= c.HOP_S / 10
 
     def test_a_dropout_shorter_than_the_signal_of_a_step_does_not_end_the_session(self):
         assert CONFIG.timeouts.stream_s > Steps.at(c.DETECTOR_FS).context / c.DETECTOR_FS
-
-    def test_model_gets_more_time_to_load_than_pd_to_connect(self):
-        assert CONFIG.timeouts.model_load_s > CONFIG.timeouts.pd_connect_s > 0
 
 
 class TestProtocol:
@@ -118,30 +72,12 @@ class TestProtocol:
         assert (self.BLOCKS[-1].label, self.BLOCKS[-1].duration_s) == ("FREE", 0)
 
 
-class TestGenerator:
-    def test_every_model_is_made_in_the_models_folder_kept_out_of_git(self):
-        folder = CONFIG.generator.directory
-        assert folder == c.MODELS_DIR / "music_generator"
+class TestFolders:
+    def test_what_the_program_trains_and_the_songs_of_the_library_are_kept_out_of_git(self):
         assert c.FOCUS_DETECTOR_DIR == c.MODELS_DIR / "focus_detector"
-        assert f"/{c.MODELS_DIR}/" in GIT_IGNORED
-        assert not any(line.startswith(f"/{folder}") for line in GIT_IGNORED)
-
-    def test_install_script_puts_files_where_the_program_looks_for_them(self):
-        """The layout below generator.folder is written in two places; they must agree."""
-        assert "$ROOT/" + c.GENERATOR_PD_BINARY in INSTALL_SCRIPT
-        assert "$ROOT/" + c.GENERATOR_EXTERNAL_FILE in INSTALL_SCRIPT
-        assert f'"$ROOT/{c.GENERATOR_ASSETS}/$file"' in INSTALL_SCRIPT
-        (listed,) = re.findall(r'^ASSET_FILES="([^"]*)"$', INSTALL_SCRIPT, re.MULTILINE)
-        assert tuple(listed.split()) == c.GENERATOR_ASSET_FILES
-        model_file = c.GENERATOR_MODEL_FILE.format(model="$MODEL")
-        assert "$ROOT/" + model_file in INSTALL_SCRIPT
-
-    def test_model_package_and_the_built_object_are_the_same_release(self):
-        """The model files come from the Python package, mrt2~ is built from the git tag."""
-        (requirement,) = PROJECT["project"]["optional-dependencies"]["generator"]
-        package, pinned = requirement.split("==")
-        assert package == "magenta-rt[mlx]"
-        assert f'MRT_VERSION="v{pinned}"' in INSTALL_SCRIPT
+        assert {f"/{c.MODELS_DIR}/", f"/{c.LIBRARY_DIR}/", f"/{c.SESSIONS_DIR}/"} <= set(
+            GIT_IGNORED
+        )
 
 
 class TestProject:
@@ -153,8 +89,7 @@ class TestProject:
     def test_every_library_is_pinned_to_one_release(self):
         """Another numpy or scipy trains another model and gives other metrics."""
         project = PROJECT["project"]
-        every = [*project["dependencies"], *project["optional-dependencies"]["generator"],
-                 *project["optional-dependencies"]["dev"]]  # fmt: skip
+        every = [*project["dependencies"], *project["optional-dependencies"]["dev"]]
         assert every and all(re.fullmatch(r"[A-Za-z0-9_.\-\[\]]+==[0-9][0-9.]*", d) for d in every)
 
     def test_the_pins_are_the_releases_installed_here(self):

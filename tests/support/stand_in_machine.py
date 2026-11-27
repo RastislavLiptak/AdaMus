@@ -1,12 +1,11 @@
-"""A stand-in for the computer the program runs on: its audio device, headsets, generator and
-setup steps are what the test decides."""
+"""A stand-in for the computer the program runs on: its audio outputs, headsets, music and
+training are what the test decides."""
 
 import shutil
 import time
 from pathlib import Path
 
 from adamus import constants as c
-from adamus.audio_outputs import AudioOutput
 from adamus.errors import AdamusError
 from adamus.machine import Machine
 from adamus.realtime.eeg_source import RecordingSource
@@ -17,10 +16,9 @@ from tests.support.stand_in_devices import (
     SPEAKERS,
     TV,
     StandInClock,
-    StandInGenerator,
+    StandInMusic,
     StandInSource,
 )
-from tests.support.stand_in_generator_files import install_generator_files
 
 # What the stand-in headset delivers: a long rest, then two FOCUS blocks.
 LIVE_PROTOCOL = [["REST", 64], ["FOCUS", 20], ["REST", 20], ["FOCUS", 20]]
@@ -53,26 +51,27 @@ class WatchedRecording(RecordingSource):
 
 
 class StandInMachine(Machine):
-    """A computer whose audio device, headsets and generator the test decides.
+    """A computer whose audio outputs, headsets and music the test decides.
 
     Sessions run for real: a recording is played by the real player on a clock
     that does not wait; a live headset is a stand-in that delivers 124 s of
-    synthetic signal and then falls silent.
+    synthetic signal and then falls silent. The music is a stand-in that plays nothing; it
+    plays the song the session asks for when the library has it.
     """
 
     def __init__(self, sessions_root: Path, datasets_root: Path) -> None:
         self.sessions_root = sessions_root
         self.datasets_root = datasets_root
-        self.audio: AudioOutput | None = AudioOutput(SPEAKERS, float(c.AUDIO_RATE))  # the system's
-        self.outputs = [AudioOutput(TV, float(c.AUDIO_RATE)), self.audio]
+        self.library_root = sessions_root.parent / c.LIBRARY_DIR
+        self.audio: str | None = SPEAKERS  # the system's
+        self.outputs = [TV, SPEAKERS]
         self.headsets_on = {"Muse 2"}
-        self.generator = StandInGenerator()
+        self.musics: list[StandInMusic] = []  # of the sessions, in turn
+        self.music_failure = ""  # what the music says when it cannot start, if set
         self.probed: list[int] = []
         self.sources: list[StandInSource | WatchedRecording] = []
         self.source_failure = ""
         self.live_samples: int | None = None  # the headset delivers only this many, if set
-        self.installation = "fails"  # or "installs" the missing files, or "does nothing"
-        self.installed: list[str] = []  # the generator folders an installation ran for
         self.training = "fails"  # or "trains" the models of the project, or "does nothing"
         self.trainings = 0
         # a stop request comes while a session with the headset runs: each poll takes real time;
@@ -89,15 +88,6 @@ class StandInMachine(Machine):
             place_focus_model(Path())
         return log_file
 
-    def install_generator(self, generator):
-        self.installed.append(generator.folder)
-        log_file = generator.directory / c.SETUP_LOG
-        if self.installation == "fails":
-            raise AdamusError(f"the installation of the generator failed, see {log_file}")
-        if self.installation == "installs":
-            install_generator_files(generator.directory, generator.model)
-        return log_file
-
     def audio_output(self):
         if self.audio is None:
             raise AdamusError("the Mac has no audio output")
@@ -110,10 +100,7 @@ class StandInMachine(Machine):
         self.probed.append(board.id)
         return board.name in self.headsets_on
 
-    def make_generator(self, config, report):
-        return self.generator
-
-    def devices(self, config, recording, generator, stop):
+    def devices(self, config, recording, song, output, stop):
         if self.source_failure:
             raise OSError(self.source_failure)
         clock = (
@@ -124,7 +111,10 @@ class StandInMachine(Machine):
             self.sources.append(StandInSource(matrix, live=True))
         else:
             self.sources.append(WatchedRecording(config.board, recording, clock))
-        return Devices(self.sources[-1], generator, stop, clock)
+        played = self.library.folder(song)  # a song the test did not place fails, as it should
+        self.musics.append(StandInMusic(clock, fail_to_start=self.music_failure, song=played))
+        self.musics[-1].output = output
+        return Devices(self.sources[-1], self.musics[-1], stop, clock)
 
 
 def place_focus_model(folder: Path) -> None:

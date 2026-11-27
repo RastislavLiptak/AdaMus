@@ -80,7 +80,7 @@ def test_a_time_is_shown_as_the_app_shows_it(seconds, shown):
 def test_the_parts_of_the_data_in_their_order(data, written):
     assert list(data) == [
         "session", "part", "summary", "protocol", "detector", "music", "eeg", "log", "events",
-        "generator", "configuration", "files",
+        "music_decisions", "configuration", "files",
     ]  # fmt: skip
     assert written.endswith("}\n")
 
@@ -207,18 +207,19 @@ def test_the_lines_of_the_log_are_counted_by_how_grave_they_are(data, tracks):
     }
 
 
-def test_how_far_the_music_was_steered_over_the_part(data, tracks):
+def test_the_states_the_music_was_told_over_the_part(data, tracks):
     levels = [s for s in audio_of(tracks).level if s.start_s < END_S and s.end_s > START_S]
-    values = [s.value for s in levels]
-    assert data["summary"]["music_toward_focus"] == {
-        "first": round(values[0], 4), "last": round(values[-1], 4),
-        "lowest": round(min(values), 4), "highest": round(max(values), 4),
+    states = [c.FOCUS if s.value == 1.0 else c.REST for s in levels]
+    assert data["summary"]["music_told"] == {
+        "first": states[0], "last": states[-1],
+        "focus_at_all": c.FOCUS in states, "rest_at_all": c.REST in states,
     }  # fmt: skip
-    assert data["music"]["toward_focus"]["columns"] == ["from_s", "to_s", "value"]
-    assert data["music"]["toward_focus"]["rows"] == [
-        [round(max(s.start_s, START_S), 3), round(min(s.end_s, END_S), 3), round(s.value, 4)]
-        for s in levels
+    assert data["music"]["told"]["columns"] == ["from_s", "to_s", "state"]
+    assert data["music"]["told"]["rows"] == [
+        [round(max(s.start_s, START_S), 3), round(min(s.end_s, END_S), 3), state]
+        for s, state in zip(levels, states, strict=True)
     ]
+    assert set(states) == {c.REST, c.FOCUS}  # the part holds a switch
 
 
 def test_the_limits_of_the_detector_and_every_step_of_the_part_whole(data, played):
@@ -232,12 +233,12 @@ def test_the_limits_of_the_detector_and_every_step_of_the_part_whole(data, playe
     assert [step["k"] for step in steps] == [tick["k"] for _, tick in expected]
     end, tick = expected[0]
     sent = tick["t_sent"]
-    assert sent is not None  # every step of the session sent its weights
+    assert sent is not None  # every step of the session told the music its state
     assert steps[0] == {
         "k": tick["k"], "end_s": round(end, 3), "t_eeg": tick["t_eeg"],
         "block_index": tick["block_index"], "block_label": tick["block_label"],
         "full_window": tick["full_window"], "valid": True, "f": known(tick["f"], 4),
-        "f_held": False, "score": known(tick["score"], 4), "w_focus": known(tick["w_focus"], 4),
+        "f_held": False, "score": known(tick["score"], 4), "told": tick["told"],
         "sent_after_s": round(sent - tick["t_eeg"], 4),
         **{f"max_abs_uv_{name}": known(value, 2)
            for name, value in zip(c.DETECTOR_ELECTRODES, tick["max_abs_uv"], strict=True)},
@@ -258,7 +259,7 @@ def test_the_music_and_its_loudness_over_the_part(data, tracks):
     first = math.floor((START_S - audio.start_s) * audio.rate_hz)
     last = math.ceil((END_S - audio.start_s) * audio.rate_hz)
     level = np.maximum(np.abs(low[first:last]), np.abs(high[first:last]))
-    music = {key: value for key, value in data["music"].items() if key != "toward_focus"}
+    music = {key: value for key, value in data["music"].items() if key != "told"}
     assert music == {
         "recorded": True, "start_s": round(audio.start_s, 3) + 0.0,
         "end_s": round(audio.start_s + audio.duration_s, 3),
@@ -282,7 +283,7 @@ def test_a_session_without_music_says_so(copied):
     (copied / c.FILE_AUDIO).unlink()
     music = cut(copied, session_tracks(copied))["music"]
     assert music["recorded"] is False and "peak_dbfs" not in music
-    assert music["toward_focus"]["rows"]  # how far it was steered, all the same
+    assert music["told"]["rows"]  # what it was told, all the same
 
 
 def test_every_electrode_raw_and_filtered_over_the_part(data, tracks):
@@ -341,31 +342,32 @@ def test_the_events_of_the_part_as_they_were_stored(data, played):
     }
 
 
-def test_what_the_generator_was_sent_in_the_part_as_it_was_stored(data, played, tracks):
-    sent = read_jsonl(played.directory / c.FILE_GENERATOR)
-    inside = [line for line in sent if START_S <= line["n"] / FS <= END_S]
-    assert any("noteon" in line["msg"] for line in inside), "chords in the part"
-    assert any("prompt 0" in line["msg"] for line in inside), "steps in the part"
-    assert data["generator"] == [{"time_s": round(line["n"] / FS, 3), **line} for line in inside]
-    first, last = sent[5], sent[-5]
-    ends = cut(played.directory, tracks, first["n"] / FS, last["n"] / FS)["generator"]
+def test_where_the_music_went_in_the_part_as_it_was_stored(data, played, tracks):
+    went = read_jsonl(played.directory / c.FILE_MUSIC)
+    inside = [line for line in went if START_S <= line["n"] / FS <= END_S]
+    assert any(line["kind"] == "switch" for line in inside), "a switch in the part"
+    assert data["music_decisions"] == [
+        {"time_s": round(line["n"] / FS, 3), **line} for line in inside
+    ]
+    first, last = went[0], went[-1]
+    ends = cut(played.directory, tracks, first["n"] / FS, last["n"] / FS)["music_decisions"]
     assert ends[0]["n"] == first["n"] and ends[-1]["n"] == last["n"]  # both ends belong to it
 
 
 def test_the_configuration_it_ran_with_whole_in_its_order(copied, tracks):
     settings = yaml.safe_load((copied / c.FILE_CONFIG).read_text())
-    settings["styles"][0]["name"] = "Tichý klavír"
+    settings["board"]["name"] = "Čelenka Muse"
     (copied / c.FILE_CONFIG).write_text(yaml.safe_dump(settings, sort_keys=False))
     written = excerpt_of(copied, tracks, START_S, END_S)
     assert json.loads(written)["configuration"] == settings
     assert list(json.loads(written)["configuration"]) == list(settings)
-    assert '"name": "Tichý klavír"' in written  # its letters as they are
+    assert '"name": "Čelenka Muse"' in written  # its letters as they are
 
 
 def test_the_files_of_the_session_there(copied, tracks):
-    (copied / c.FILE_PD_LOG).unlink()
-    names = [c.FILE_TICKS, c.FILE_FILTERED, c.FILE_RAW, c.FILE_EVENTS, c.FILE_GENERATOR,
-             c.FILE_LOG, c.FILE_AUDIO, c.FILE_META, c.FILE_METRICS, c.FILE_CONFIG]  # fmt: skip
+    (copied / c.FILE_METRICS).unlink()
+    names = [c.FILE_TICKS, c.FILE_FILTERED, c.FILE_RAW, c.FILE_EVENTS, c.FILE_MUSIC,
+             c.FILE_LOG, c.FILE_AUDIO, c.SONG_DIR, c.FILE_META, c.FILE_CONFIG]  # fmt: skip
     assert cut(copied, tracks)["files"] == {name: str((copied / name).resolve()) for name in names}
 
 

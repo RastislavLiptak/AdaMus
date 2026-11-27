@@ -38,7 +38,7 @@ class ApiServer:
         self._preflight = preflight
         self._machine = machine
         self._activity = activity
-        self._runner = SessionRunner(preflight, machine, activity, app_gone)
+        self._runner = SessionRunner(machine, activity, app_gone)
         self._server: uvicorn.Server | None = None
         self._thread: threading.Thread | None = None
         self._listening: socket.socket | None = None  # the port it answers on, held until it ends
@@ -49,6 +49,7 @@ class ApiServer:
             catalogue=SessionCatalogue(self._machine.sessions_root, self._machine.datasets_root),
             new_session=NewSession(self._preflight, self._machine, self._activity),
             runner=self._runner,
+            library=self._machine.library,
         )
         return self._start_server(services), services.token
 

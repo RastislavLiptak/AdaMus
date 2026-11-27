@@ -34,16 +34,7 @@ final class Workspace {
     /// The sessions again, every page of them; the chosen one stays chosen while it is there.
     func load() async {
         do {
-            var page = try await api.sessions(from: 0)
-            var listed = page.sessions
-            while listed.count < page.total {  // sessions may come or go meanwhile, and pages move
-                page = try await api.sessions(from: listed.count)
-                let known = Set(listed.map(\.id))
-                let new = page.sessions.filter { !known.contains($0.id) }
-                if new.isEmpty { break }
-                listed += new
-            }
-            sessions = listed
+            sessions = try await api.sessions()
             listProblem = nil
             if let selection, !sessions.contains(where: { $0.id == selection }) {
                 self.selection = nil

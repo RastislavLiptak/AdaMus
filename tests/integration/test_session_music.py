@@ -1,86 +1,87 @@
-"""The music of a session: its chords struck on their bars, and its full form (drums, power
-chords) from focus on, changing at most once a bar; everything as generator.jsonl recorded it."""
+"""A session with its real music: the player of a song of the library, on an output that takes
+the music faster than it plays, as the session of the tests runs faster than time."""
 
-import re
+import shutil
 
 import pytest
+import soundfile
 
 from adamus import constants as c
-from adamus.config import with_style
-from adamus.session_format import read_jsonl
+from adamus.realtime.song_player import SongPlayer
+from adamus.server.dashboard import dashboard_of
+from adamus.song_library import Library, analysis_in, audio_in, song_in
 from tests.support.finished_sessions import FinishedSession, config_with, synthetic_matrix
-from tests.support.short_sessions import CONTROL, STYLE
-
-FOCUS_WEIGHT = re.compile(r"prompt 1 [a-z0-9 -]+ (\d\.\d{3});")
-
-
-def sent(session):
-    return read_jsonl(session.directory / c.FILE_GENERATOR)
-
-
-def strikes(lines):
-    """(time, notes) of every chord struck."""
-    found = []
-    for line in lines:
-        notes = [int(n) for n in re.findall(r"noteon (\d+);", line["msg"])]
-        if notes:
-            found.append((line["t"], notes))
-    return found
+from tests.support.short_sessions import CONTROL
+from tests.support.stand_in_outputs import (
+    BLOCK,
+    OUTPUT,
+    RATE,
+    FastOutput,
+    MusicClock,
+    stand_in_output,
+)
+from tests.support.synthetic_songs import BEAT_S, SECONDS, add_marked, write_song
 
 
-def steps(lines):
-    """(time, weight toward focus, the rest of the message) of every step."""
-    found = []
-    for line in lines:
-        weight = FOCUS_WEIGHT.search(line["msg"])
-        if weight and "prompt 0" in line["msg"]:
-            found.append((line["t"], float(weight.group(1)), line["msg"]))
-    return found
+@pytest.fixture(scope="module")
+def library(tmp_path_factory):
+    """A song whose first half is marked rest and its second focus."""
+    root = tmp_path_factory.mktemp("songs") / "library"
+    library = Library(root)
+    add_marked(library, write_song(root.parent / "Beat.flac", title="A Beat"))
+    return library
 
 
-@pytest.fixture(scope="module", params=["rock", "country"])
-def styled(request, tmp_path_factory):
-    """A session over 120 s of blocks of 30 s, in a style with power chords or drums in focus."""
-    config = with_style(config_with(CONTROL), request.param)
-    session = FinishedSession(
-        tmp_path_factory.mktemp(request.param), config, synthetic_matrix(CONTROL)
-    )
-    return session, config.style
+@pytest.fixture
+def played(library, tmp_path, monkeypatch):
+    stand_in_output(monkeypatch, FastOutput)
+    FastOutput.made = []
+    shutil.copytree(library.root, tmp_path / "library")
+    (song,) = Library(tmp_path / "library").songs()
+    music = SongPlayer(Library(tmp_path / "library"), song.id, OUTPUT, lambda: [OUTPUT])
+    clock = MusicClock()
+    return FinishedSession(tmp_path, config_with(CONTROL), synthetic_matrix(CONTROL),
+                           music=music, clock=clock)  # fmt: skip
 
 
-def test_the_chords_are_struck_on_their_bars_after_their_gap(short):
-    """The loop wakes for the chords: a strike waits for no poll of the samples."""
-    struck = strikes(sent(short))
-    first = struck[0][0]
-    assert len(struck) >= 5
-    for moment, _ in struck[1:]:
-        bars = (moment - first - STYLE.chord_gap_s) / STYLE.bar_s
-        assert bars == pytest.approx(round(bars), abs=1e-4), moment - first
+def test_the_music_given_to_the_output_is_the_recording_of_the_session(played):
+    (output,) = FastOutput.made
+    info = soundfile.info(played.directory / c.FILE_AUDIO)
+    assert (info.samplerate, info.channels, info.subtype) == (RATE, 2, "PCM_16")
+    assert info.frames == output.blocks * BLOCK > 0  # every block, none since it stopped
+    assert played.events_of("MUSIC_END")[0]["dropouts"] == 0
 
 
-def form_switches(session, style):
-    """When the full form came and went, and what it was at each step: by the power chords of a
-    style that has them, by the drums of one that has them."""
-    lines = sent(session)
-    if style.focus_power_chords:
-        held = [(t, len(notes) == 3) for t, notes in strikes(lines)]  # a power chord: 3 notes
-    else:
-        held = [(t, "drumless 0;" in rest) for t, _, rest in steps(lines)]
-    switches = [t for (t, full), (_, before) in zip(held[1:], held, strict=False) if full != before]
-    return held, switches
+def test_where_the_music_went_follows_the_states_it_was_told(played):
+    went = played.music_lines
+    assert (went[0]["kind"], went[0]["mark"], went[0]["from_s"]) == ("start", c.REST, None)
+    switches = [line for line in went if line["kind"] == "switch"]
+    assert switches and switches[0]["mark"] == c.FOCUS  # the first focus block was found
+    # a beat belongs to the part its middle lies in: the first of focus may begin before it
+    assert all(line["to_s"] >= SECONDS / 2 - BEAT_S / 2 for line in went if line["mark"] == c.FOCUS)
+    assert all(line["to_s"] < SECONDS / 2 for line in went if line["mark"] == c.REST)
 
 
-def test_the_full_form_comes_at_once_with_the_first_step_of_focus(styled):
-    session, style = styled
-    first_focus = next(t for t, weight, _ in steps(sent(session)) if weight >= c.FOCUS_THRESHOLD)
-    held, switches = form_switches(session, style)
-    assert not any(full for t, full in held if t < first_focus)  # never before focus
-    assert switches[0] == pytest.approx(first_focus, abs=1e-3)  # with that step, not a bar later
+def test_the_session_keeps_the_song_as_the_library_had_it(played, tmp_path):
+    """Whatever the library does with the song later: the session can be played again."""
+    library = Library(tmp_path / "library")
+    (song,) = library.songs()
+    draft = library.draft_of(song.id)
+    library.mark(draft.id, 0.0, SECONDS, c.FOCUS)
+    library.mark(draft.id, 0.0, 1.0, c.REST)
+    library.keep(draft.id, "Another", None)
+    played_from = audio_in(library.folder(song.id)).read_bytes()
+    library.delete(song.id)
+    kept = played.directory / c.SONG_DIR
+    assert song_in(kept).title == "A Beat"
+    assert [m.mark for m in song_in(kept).marks] == [c.REST, c.FOCUS]
+    assert song_in(kept).marks[0].end_s == pytest.approx(SECONDS / 2)
+    assert audio_in(kept).read_bytes() == played_from
+    assert analysis_in(kept).beats
 
 
-def test_the_form_changes_at_most_once_a_bar_and_goes_with_the_focus_again(styled):
-    session, style = styled
-    _, switches = form_switches(session, style)
-    assert len(switches) >= 3  # on in focus, off at rest, on again
-    gaps = [later - earlier for earlier, later in zip(switches, switches[1:], strict=False)]
-    assert min(gaps) >= style.bar_s - 1e-6
+def test_the_overview_shows_the_song_the_session_kept(played):
+    song = dashboard_of(played.directory, None, False).song
+    assert song is not None and song.title == "A Beat"
+    assert [part.mark for part in song.parts] == [c.REST, c.FOCUS]
+    assert song.parts[-1].end_s == pytest.approx(song.length_s)

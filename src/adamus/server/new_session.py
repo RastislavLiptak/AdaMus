@@ -1,8 +1,8 @@
 """The form for a new session: what it offers, what it checks, and the session it prepares.
 
 The steps are those of a session from the start: a source (the headset, or a dataset
-and one of its recordings), the style of its music, a name, and a check that the source has an
-electrode of the detector. A source is known by its kind and its name, e.g.
+and one of its recordings), the song of the library its music is made of, a name, and a check
+that the source has an electrode of the detector. A source is known by its kind and its name, e.g.
 ``dataset:synthetic``. The music plays on the audio output chosen in it: at first the one the
 system plays on.
 
@@ -19,10 +19,9 @@ from typing import Protocol
 from adamus import constants as c
 from adamus import datasets
 from adamus.activity_log import ACTION_HEADSET_LOOKED_FOR, ActivityLog
-from adamus.audio_outputs import AudioOutput
-from adamus.config import Config, Style, with_style
+from adamus.config import Config
 from adamus.errors import AdamusError
-from adamus.machine import Machine, RunningGenerator
+from adamus.machine import Machine
 from adamus.server import api_models
 from adamus.session_format import NAME_MAX, SESSION_NAME, is_session_name
 from adamus.session_sources import (
@@ -46,18 +45,6 @@ class PreflightResults(Protocol):
     @property
     def config(self) -> Config | None: ...
 
-    @property
-    def generator(self) -> RunningGenerator | None: ...
-
-
-def wrong_rate(output: AudioOutput) -> str | None:
-    """Why the music cannot play on ``output`` as it is set, if it cannot."""
-    if output.rate == c.AUDIO_RATE:
-        return None
-    return (
-        f"{output.name} plays {output.rate:g} Hz. Set it to {c.AUDIO_RATE} Hz in Audio MIDI Setup."
-    )
-
 
 @dataclass(frozen=True)
 class PreparedSession:
@@ -67,6 +54,7 @@ class PreparedSession:
     name: str
     source: Source
     recording: Path | None  # of a dataset; None for the headset
+    song_id: str  # of the library: the song its music is made of
     output: str  # the audio output the music plays on
 
 
@@ -107,17 +95,10 @@ class NewSession:
             )
             for source in self.sources()
         ]
-        styles = [
-            api_models.StyleChoice(id=style.id, title=style.name) for style in self._config().styles
-        ]
         return api_models.NewSessionForm(
-            sources=sources, sources_hint=SOURCES_HINT, styles=styles, name_pattern=SESSION_NAME,
+            sources=sources, sources_hint=SOURCES_HINT, name_pattern=SESSION_NAME,
             name_hint=NAME_HINT,
         )  # fmt: skip
-
-    def style(self, style_id: str) -> Style | None:
-        """The style of the configuration known by ``style_id``, if there is one."""
-        return next((style for style in self._config().styles if style.id == style_id), None)
 
     def sources(self) -> list[Source]:
         """The headset, when the last look found it, and the datasets in the data folder now."""
@@ -144,21 +125,23 @@ class NewSession:
         """The outputs the Mac has now, and the one the system plays on."""
         outputs = self._machine.audio_outputs()
         try:
-            system: str | None = self._machine.audio_output().name
+            system: str | None = self._machine.audio_output()
         except AdamusError:
             system = None
-        choices = [api_models.AudioOutputChoice(id=o.name, title=o.name) for o in outputs]
+        choices = [api_models.AudioOutputChoice(id=name, title=name) for name in outputs]
         return api_models.AudioOutputs(outputs=choices, system=system, hint=OUTPUTS_HINT)
 
     def _output(self, name: str) -> str:
-        """The output ``name``, if the music can play on it; AdamusError says why not."""
-        found = {output.name: output for output in self._machine.audio_outputs()}
-        if name not in found:
+        """The output ``name``, if it is connected; AdamusError says it is not."""
+        if name not in self._machine.audio_outputs():
             raise AdamusError(f"{name} is not connected.")
-        problem = wrong_rate(found[name])
-        if problem is not None:
-            raise AdamusError(problem)
         return name
+
+    def _song(self, song_id: str) -> str:
+        """The song ``song_id``, if the library has it: then a session can play it, as only a
+        song marked each state goes into it. AdamusError says it does not."""
+        self._machine.library.song(song_id)
+        return song_id
 
     def check(self, source: str, recording: str | None) -> api_models.SourceCheck:
         """Which electrodes of the detector the source lacks, and whether it can run at all."""
@@ -180,9 +163,10 @@ class NewSession:
         if checked.problem is not None:
             raise AdamusError(checked.problem)
         output = self._output(request.output)
+        song = self._song(request.song_id)
         config, recording = self._config_and_recording(request.source_id, request.recording)
-        config = with_style(config, request.style_id)
-        return PreparedSession(config, name, self._source(request.source_id), recording, output)
+        source = self._source(request.source_id)
+        return PreparedSession(config, name, source, recording, song, output)
 
     def _source(self, source: str) -> Source:
         for found in self.sources():

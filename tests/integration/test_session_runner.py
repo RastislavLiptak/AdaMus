@@ -14,10 +14,12 @@ from adamus.server.dashboard import DID_NOT_START, dashboard_of
 from adamus.server.new_session import NewSession
 from adamus.server.session_runner import SessionRunner
 from adamus.session_format import read_jsonl
+from adamus.song_library import song_in
 from tests.support.finished_sessions import synthetic_signals
 from tests.support.stand_in_devices import SPEAKERS, TV
 from tests.support.stand_in_machine import StandInMachine
 from tests.support.stand_in_preflight import Checked
+from tests.support.stand_in_songs import SONG, place_song
 from tests.support.synthetic_dataset import write_recording
 from tests.support.waiting import wait_until
 
@@ -31,17 +33,18 @@ class Run:
     def __init__(self, folder):
         self.machine = StandInMachine(folder / "sessions", folder / "data")
         write_recording(folder / "data" / "synthetic" / "short", synthetic_signals(SHORT), SHORT)
+        place_song(self.machine.library_root)
         self.checked = Checked()
         self.activity = ActivityLog()
         self.app_gone = threading.Event()
-        self.runner = SessionRunner(self.checked, self.machine, self.activity, self.app_gone.is_set)
+        self.runner = SessionRunner(self.machine, self.activity, self.app_gone.is_set)
         # The form logs its looks for the headset apart: tests/unit/test_new_session.py.
         self.form = NewSession(self.checked, self.machine, ActivityLog())
         self.form.look_for_headset()
 
     def ask(self, source="dataset:synthetic", recording="short", name="S01", output=SPEAKERS):
         request = SessionRequest(
-            style_id="folk", source_id=source, recording=recording, name=name, output=output
+            song_id=SONG, source_id=source, recording=recording, name=name, output=output
         )
         return self.runner.request(self.form.prepare(request))
 
@@ -212,26 +215,14 @@ def test_a_stop_without_a_session_is_not_logged(run):
     assert run.activity.waiting == []
 
 
-def test_the_app_ending_stops_the_running_session_says_so_and_stops_pd_first(
-    run, tmp_path, monkeypatch
-):
-    """Pd goes at once, not after the storing and the analysis, which may take a while."""
-    generator = run.checked.generator  # started by the checks, as the program starts it
-    real_analyze = session_runner.analyze
-    stopped_when_analysed = []
-
-    def analyze(directory):
-        stopped_when_analysed.append(generator.stopped)
-        real_analyze(directory)
-
-    monkeypatch.setattr(session_runner, "analyze", analyze)
+def test_the_app_ending_stops_the_running_session_and_its_music_and_says_so(run, tmp_path):
     run.machine.paced = True
     run.ask(source="headset:Muse 2", recording=None, name="live")
     state = run.serve_one(while_running=run.app_gone.set)
     folder = tmp_path / "sessions" / state.session_id
     assert read_jsonl(folder / c.FILE_EVENTS)[-1]["reason"] == "user"
     assert "STOP_REQUESTED" not in run.actions(folder) and "APP_ENDED" in run.actions(folder)
-    assert stopped_when_analysed == [1]
+    assert run.machine.musics[-1].stopped == 1
     (run_section,) = [s for s in dashboard_of(folder, None, False).sections if s.title == "Run"]
     ended = [i.value.value for i in run_section.items if i.kind == "fact" and i.label == "Ended By"]
     assert ended == ["The app was closed"]
@@ -306,61 +297,49 @@ def test_what_follows_a_finished_session_belongs_to_the_next_one(run, tmp_path):
     assert [entry["type"] for entry in run.activity.waiting] == ["PREFLIGHT"]
 
 
-def test_a_session_on_another_output_starts_the_generator_again_there_first(run, tmp_path):
-    generator = run.checked.generator
+def test_the_music_plays_the_song_asked_for_on_the_output_asked_for(run, tmp_path):
     run.ask(output=TV)
     folder = tmp_path / "sessions" / run.serve_one().session_id
-    assert (generator.outputs, generator.stopped, generator.output) == ([SPEAKERS, TV], 1, TV)
+    music = run.machine.musics[-1]
+    assert (music.output, music.song.name, music.started, music.stopped) == (TV, SONG, 1, 1)
     assert json.loads((folder / c.FILE_META).read_text())["audio_output"] == TV
+    assert song_in(folder / c.SONG_DIR).title == SONG
 
 
-def test_a_session_on_the_output_the_music_plays_on_starts_nothing_again(run):
-    run.ask()
-    run.serve_one()
-    assert run.checked.generator.outputs == [SPEAKERS]
-
-
-def test_a_session_on_an_output_that_was_disconnected_starts_the_generator_again(run):
-    run.checked.generator.output_lost = True  # and is back, as the form offers it again
-    run.ask()
-    run.serve_one()
-    assert run.checked.generator.outputs == [SPEAKERS, SPEAKERS]
-
-
-def test_a_generator_that_cannot_start_on_the_output_starts_no_session(run, tmp_path):
-    run.checked.generator._fail_to_start = ("Pd could not play on TV", "Pure Data printed:")
+def test_music_that_cannot_start_ends_its_session_with_why(run, tmp_path):
+    """The music starts once the stream has: the session is there, and says why it ended."""
+    run.machine.music_failure = "TV is not connected, or does not play in stereo"
     run.ask(output=TV)
     state = run.serve_one()
-    assert (state.phase, state.session_id) == ("idle", None)
-    assert state.problem == "Pd could not play on TV\nPure Data printed:"
-    assert not (tmp_path / "sessions").exists()
-    assert [entry["type"] for entry in run.activity.waiting] == [
-        "SESSION_REQUESTED",
-        "START_FAILED",
+    assert state.problem == run.machine.music_failure
+    folder = tmp_path / "sessions" / state.session_id
+    events = read_jsonl(folder / c.FILE_EVENTS)
+    assert [(e["where"], e["message"]) for e in events if e["type"] == "ERROR"] == [
+        ("music", run.machine.music_failure)
     ]
+    assert run.actions(folder) == ["SESSION_REQUESTED", "SESSION_STARTED", "SESSION_ENDED"]
 
 
 def test_a_session_whose_output_is_disconnected_ends_with_an_error_the_operator_is_told(
     run, tmp_path
 ):
     """The music heard nowhere, the session is of no use: it ends, its recording kept."""
-    generator = run.checked.generator
     run.machine.paced = True
     run.ask(source="headset:Muse 2", recording=None, name="live")
+    expected = f"The audio output {SPEAKERS} was disconnected, so the music could not be heard."
 
     def disconnected():
-        generator.output_lost = True
+        run.machine.musics[-1].problem_said = expected
 
     state = run.serve_one(while_running=disconnected)
-    expected = f"The audio output {SPEAKERS} was disconnected, so the music could not be heard."
     assert (state.phase, state.problem) == ("idle", expected)
     folder = tmp_path / "sessions" / state.session_id
     events = read_jsonl(folder / c.FILE_EVENTS)
     assert [(e["where"], e["message"]) for e in events if e["type"] == "ERROR"] == [
-        ("generator", expected)
+        ("music", expected)
     ]
     assert events[-1]["reason"] == "error"
-    assert generator.messages[-1] == "rec stop;"  # the recording of the music is closed
+    assert run.machine.musics[-1].stopped == 1  # the recording of the music is closed
     assert (
         tmp_path / c.DATASETS_DIR / c.OWN_RECORDINGS / folder.name / c.FILE_DATASET_EEG
     ).is_file()

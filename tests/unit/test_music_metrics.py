@@ -1,5 +1,5 @@
-"""evaluation.metrics of the music: dropouts, how the music followed the focus and how the
-audio is read, on hand-made sound with known answers."""
+"""evaluation.metrics of the music: its dropouts, how it followed the focus and how the audio is
+read, on hand-made sound with known answers."""
 
 import librosa
 import numpy as np
@@ -23,59 +23,16 @@ def folder(tmp_path, raw_config):
     return session_builder(tmp_path, raw_config)
 
 
-def silent_of(pcm):
-    """Frames where every channel is zero."""
-    return np.asarray(~pcm.any(axis=1))
-
-
 class TestDropouts:
-    def audio(self, seconds=2.0):
-        t = np.arange(int(seconds * RATE))
-        mono = (1000 * np.sin(2 * np.pi * 440 * t / RATE)).astype(np.int16)
-        mono[mono == 0] = 1  # no accidental digital silence
-        return np.column_stack([mono, mono])
+    """As the output told them: blocks it played before they were ready."""
 
-    def test_clean_audio(self):
-        assert metrics.dropouts(silent_of(self.audio()), RATE) == {
-            "count": 0,
-            "total_s": 0.0,
-            "first_sound_s": 0.0,
-        }
+    def test_counted_as_the_music_ended(self, folder):
+        ended = folder([], [event("MUSIC_START", 100.0), event("MUSIC_END", 150.0, dropouts=3)])
+        assert metrics.dropouts(ended) == {"count": 3}
 
-    def test_silence_before_the_first_sound_is_not_a_dropout(self):
-        pcm = self.audio()
-        pcm[:24000] = 0
-        found = metrics.dropouts(silent_of(pcm), RATE)
-        assert found == {"count": 0, "total_s": 0.0, "first_sound_s": 0.5}
-
-    def test_one_model_frame_of_silence_is_a_dropout(self):
-        pcm = self.audio()
-        pcm[30000 : 30000 + 1920] = 0
-        found = metrics.dropouts(silent_of(pcm), RATE)
-        assert found == {"count": 1, "total_s": 0.040, "first_sound_s": 0.0}
-
-    def test_one_sample_less_is_not(self):
-        pcm = self.audio()
-        pcm[30000 : 30000 + 1919] = 0
-        assert metrics.dropouts(silent_of(pcm), RATE)["count"] == 0
-
-    def test_silence_in_one_channel_only_is_not_a_dropout(self):
-        pcm = self.audio()
-        pcm[30000:40000, 0] = 0
-        assert metrics.dropouts(silent_of(pcm), RATE)["count"] == 0
-
-    def test_several_dropouts_one_of_them_at_the_very_end(self):
-        pcm = self.audio()
-        pcm[10000:14800] = 0  # 100 ms
-        pcm[-9600:] = 0  # 200 ms
-        assert metrics.dropouts(silent_of(pcm), RATE) == {
-            "count": 2, "total_s": pytest.approx(0.3), "first_sound_s": 0.0,
-        }  # fmt: skip
-
-    def test_audio_that_is_silent_throughout(self):
-        silent = np.zeros((RATE, 2), dtype=np.int16)
-        found = metrics.dropouts(silent_of(silent), RATE)
-        assert found == {"count": 0, "total_s": 0.0, "first_sound_s": None}
+    def test_none_when_the_music_never_ended_or_began(self, folder):
+        assert metrics.dropouts(folder([], [event("MUSIC_START", 100.0)])) is None
+        assert metrics.dropouts(folder([])) is None
 
 
 def click_track(f_values, lag_s, seconds, step_s=0.5):
@@ -95,13 +52,10 @@ class TestAudio:
     @pytest.fixture
     def session(self, folder):
         ticks = [tick(k, block=2, f=f) for k, f in enumerate(self.F)]
-        rec_start = ticks[0]["t_sent"]  # the audio starts with the first step
-        assert rec_start is not None
-        recording = [
-            event("FUDI", rec_start, msg="rec start;"),
-            event("FUDI", rec_start + 50.0, msg="rec stop;"),
-        ]
-        return folder(ticks, recording)
+        began = ticks[0]["t_sent"]  # the music starts with the first step
+        assert began is not None
+        music = [event("MUSIC_START", began), event("MUSIC_END", began + 50.0, dropouts=0)]
+        return folder(ticks, music)
 
     @pytest.mark.parametrize("lag_s", [0.0, 1.5, 4.0, 10.0])
     def test_music_response_finds_the_lag_of_the_music_behind_the_control(self, session, lag_s):
@@ -127,7 +81,6 @@ class TestAudio:
         soundfile.write(session.directory / c.FILE_AUDIO, pcm, RATE, "PCM_16")
         result = metrics.compute_metrics(session.directory)
         assert result["music_response"]["lag_s"] == 1.0
-        assert result["audio_dropouts"]["first_sound_s"] == pytest.approx(1.0, abs=0.001)
 
     def test_music_response_is_low_for_music_that_ignores_the_control(self, session):
         unrelated = np.random.default_rng(1).random(len(self.F))
@@ -139,17 +92,8 @@ class TestAudio:
         assert metrics.music_response(session, np.zeros(RATE * 50, dtype=np.float32), RATE) is None
         without_f = folder([tick(k) for k in range(10)], session.events[1:3])
         assert metrics.music_response(without_f, click_track(self.F, 0.0, 60.0), RATE) is None
-        never_recorded = folder([tick(k, block=2, f=f) for k, f in enumerate(self.F)])
-        assert metrics.music_response(never_recorded, click_track(self.F, 0.0, 60.0), RATE) is None
-
-    def test_length_error_is_audio_length_minus_the_time_between_rec_start_and_stop(
-        self, session, folder
-    ):
-        assert metrics.recording_length_error(session, 50.25) == pytest.approx(0.25)
-        assert metrics.recording_length_error(session, 49.5) == pytest.approx(-0.5)
-        assert metrics.recording_length_error(folder([]), 10.0) is None
-        only_started = folder([], [event("FUDI", 100.0, msg="rec start;")])
-        assert metrics.recording_length_error(only_started, 10.0) is None
+        never_began = folder([tick(k, block=2, f=f) for k, f in enumerate(self.F)])
+        assert metrics.music_response(never_began, click_track(self.F, 0.0, 60.0), RATE) is None
 
     def test_audio_file_is_read_and_analysed(self, session):
         pcm = (click_track(self.F, 1.0, 50.0) * 30000).astype(np.int16)
@@ -157,11 +101,7 @@ class TestAudio:
             session.directory / c.FILE_AUDIO, np.column_stack([pcm, pcm]), RATE, "PCM_16"
         )
         result = metrics.compute_metrics(session.directory)
-        assert result["audio_dropouts"]["first_sound_s"] == pytest.approx(1.0, abs=0.001)
-        assert (
-            result["audio_dropouts"]["count"] > 0
-        )  # the silence between clicks is longer than a frame
-        assert result["recording_length_error_s"] == pytest.approx(0.0, abs=1e-6)
+        assert result["audio_dropouts"] == {"count": 0}  # silence in the music is no dropout
         assert result["music_response"]["lag_s"] == 1.0
         assert set(result["total_response_s"]) == {"rise_s", "fall_s"}
 
@@ -175,34 +115,26 @@ class TestAudio:
     ):
         """To the listener, rise and fall each take the lag of the music longer."""
         times = {"rise_s": [rise], "fall_s": [fall], "rise_median_s": rise, "fall_median_s": fall}
-        audio = {
-            "audio_dropouts": None,
-            "recording_length_error_s": None,
-            "music_response": {"rho": 0.9, "lag_s": 2.0},
-        }
+        audio = {"audio_dropouts": None, "music_response": {"rho": 0.9, "lag_s": 2.0}}
         monkeypatch.setattr(metrics, "response_times", lambda session: times)
         monkeypatch.setattr(metrics, "audio_metrics", lambda session: audio)
         assert metrics.compute_metrics(session.directory)["total_response_s"] == expected
 
     @pytest.mark.parametrize("cut_to", [0, 30])  # nothing, or not even the whole header
     def test_audio_that_cannot_be_read_counts_as_none(self, session, cut_to):
-        """Pd stopped before it wrote the file: the other metrics of the session still count."""
+        """A recording the disk took only in part: the other metrics of the session still count."""
         audio = session.directory / c.FILE_AUDIO
         soundfile.write(audio, np.zeros((RATE, 2), dtype=np.int16), RATE)
         audio.write_bytes(audio.read_bytes()[:cut_to])
         assert metrics.audio_metrics(session) == {
-            "audio_dropouts": None, "recording_length_error_s": None, "music_response": None,
+            "audio_dropouts": {"count": 0}, "music_response": None,
         }  # fmt: skip
         assert metrics.compute_metrics(session.directory)["record_completeness"]["passed"]
 
-    def test_without_audio_the_generator_metrics_are_null(self, session):
+    def test_without_audio_how_the_music_followed_is_not_known(self, session):
         result = metrics.compute_metrics(session.directory)
-        assert (
-            result["audio_dropouts"],
-            result["recording_length_error_s"],
-            result["music_response"],
-            result["total_response_s"],
-        ) == (None, None, None, None)
+        assert (result["music_response"], result["total_response_s"]) == (None, None)
+        assert result["audio_dropouts"] == {"count": 0}  # as the output told them
 
 
 def stepped_envelope(f, at, lag_s, frame_s, hop_s, seconds):
@@ -318,18 +250,14 @@ class TestReadInBlocks:
         in_blocks = librosa.onset.onset_strength(S=spectrum, sr=RATE, hop_length=metrics.ONSET_HOP)
         assert np.allclose(in_blocks, whole, rtol=1e-4, atol=1e-4)
 
-    def test_the_file_is_read_in_blocks_into_one_channel_and_its_silence(
-        self, tmp_path, monkeypatch
-    ):
+    def test_the_file_is_read_in_blocks_into_one_channel(self, tmp_path, monkeypatch):
         t = np.arange(RATE * 2)
         pcm = np.column_stack([(t % 1000) - 500, (t % 700) - 350]).astype(np.int16)
-        pcm[30000:32000] = 0
         soundfile.write(tmp_path / "audio.wav", pcm, RATE, "PCM_16")
         monkeypatch.setattr(metrics, "AUDIO_BLOCK", 9999)
-        mono, silent, rate = metrics.read_audio(tmp_path / "audio.wav")
+        mono, rate = metrics.read_audio(tmp_path / "audio.wav")
         assert rate == RATE and mono.dtype == np.float32
         assert np.array_equal(mono, metrics.mono_of(pcm))
-        assert np.array_equal(silent, silent_of(pcm))
 
 
 class TestMono:

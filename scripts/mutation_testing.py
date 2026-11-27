@@ -26,8 +26,8 @@ How a run stays correct and quiet:
   against it, file after file: tests in another order would set up the
   fixtures of a file again and again.
 
-Not mutated: this tool and the install script (their tests run whole mutation runs and
-installations, minutes for one mutant), and the app (src/ui), which its own tests check.
+Not mutated: this tool (its tests run whole mutation runs, minutes for one mutant), and the
+app (src/ui), which its own tests check.
 """
 
 import argparse

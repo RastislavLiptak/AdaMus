@@ -5,8 +5,9 @@ the program started (a header, or for a sound and a cover, which a player and an
 without a header, a query parameter), so that a program that was not given the token (of another
 user, or a web page in a browser) cannot delete sessions or start one.
 
-Each style of music has a sample, which the form plays (constants.STYLE_FILES); a session keeps
-a copy of it and of the style's cover, which its overview shows.
+The songs of the library are shown, played and deleted through it too, and changed in drafts,
+which go into the library once marked; a session keeps a copy of its song, which its overview
+shows and plays as it was then.
 """
 
 import secrets
@@ -24,6 +25,8 @@ from adamus.evaluation.session_reader import load_session_folder
 from adamus.server.api_models import (
     AudioOutputs,
     Dashboard,
+    DraftKept,
+    DraftOfFile,
     Electrode,
     Excerpt,
     HeadModel,
@@ -33,6 +36,10 @@ from adamus.server.api_models import (
     SessionRename,
     SessionRequest,
     SessionSummary,
+    Song,
+    SongMark,
+    SongMarks,
+    SongPage,
     SourceCheck,
     Timeline,
 )
@@ -42,18 +49,27 @@ from adamus.server.excerpt import excerpt_of
 from adamus.server.new_session import NAME_HINT, NewSession
 from adamus.server.session_catalogue import SessionCatalogue
 from adamus.server.session_runner import SessionRunner
+from adamus.server.songs import marks_view, page_of, song_view
 from adamus.server.timeline import SessionTracks, session_tracks
 from adamus.session_format import is_session_name
+from adamus.song_library import Library, audio_in, cover_in
 
 TOKEN_HEADER = "X-AdaMus-Token"
 ACCEPTED, NO_CONTENT = 202, 204  # HTTP status codes of success
 NOT_FOUND, CONFLICT, INVALID = 404, 409, 422  # and of failure
-MAX_PAGE = 1000  # sessions on one page of the list, at most
+MAX_PAGE = 1000  # sessions or songs on one page of their list, at most
 BINARY = "application/octet-stream"
-SOUND = "/sound"  # the end of the address of a sound: of a track, of a sample
-COVER = "/cover"  # the end of the address of the cover of a session's music
-AUDIO = "audio/wav"
-COVER_TYPE = "image/png"
+SOUND = "/sound"  # the end of the address of a sound: of a track, of a song
+COVER = "/cover"  # the end of the address of the picture of a song
+AUDIO = "audio/wav"  # what a session records
+# What the player of the app is told a song file is, by its suffix; not guessed, as Python
+# would call an .m4a file a bare stream (audio/mp4a-latm).
+MEDIA_TYPES = {
+    ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".mp4": "audio/mp4", ".aac": "audio/aac",
+    ".m4b": "audio/mp4", ".flac": "audio/flac", ".wav": "audio/wav", ".aif": "audio/aiff",
+    ".aiff": "audio/aiff", ".aifc": "audio/aiff", ".au": "audio/basic", ".caf": "audio/x-caf",
+    ".jpg": "image/jpeg", ".png": "image/png",
+}  # fmt: skip
 
 
 class TrackCache:
@@ -82,6 +98,7 @@ class Services:
     catalogue: SessionCatalogue
     new_session: NewSession
     runner: SessionRunner
+    library: Library
     token: str = field(default_factory=secrets.token_urlsafe)
     tracks: TrackCache = field(default_factory=TrackCache)
 
@@ -92,7 +109,7 @@ def services_of(request: Request) -> Services:
 
 
 Using = Annotated[Services, Depends(services_of)]
-Offset = Annotated[int, Query(ge=0)]  # of the first session of a page, in the list
+Offset = Annotated[int, Query(ge=0)]  # of the first session or song of a page, in the list
 PageSize = Annotated[int, Query(gt=0, le=MAX_PAGE)]
 
 
@@ -123,7 +140,10 @@ def create_api() -> FastAPI:
     add_excerpt_route(api)
     add_electrode_routes(api)
     add_new_session_routes(api)
-    add_style_routes(api)
+    add_song_routes(api)
+    add_draft_routes(api)
+    add_draft_file_routes(api)
+    add_session_song_routes(api)
     add_run_routes(api)
     return api
 
@@ -195,20 +215,36 @@ def add_session_routes(api: FastAPI) -> None:
             raise HTTPException(NOT_FOUND, f"no sound of {track_id}")
         return FileResponse(path, media_type=AUDIO)
 
-    @api.get("/api/sessions/{session_id}/music" + SOUND)
-    def music_sample(services: Using, session_id: str) -> FileResponse:
-        return kept_file(folder_of(services, session_id) / c.FILE_SAMPLE, AUDIO)
 
-    @api.get("/api/sessions/{session_id}/music" + COVER)
-    def music_cover(services: Using, session_id: str) -> FileResponse:
-        return kept_file(folder_of(services, session_id) / c.FILE_COVER, COVER_TYPE)
+def add_session_song_routes(api: FastAPI) -> None:
+    """The song a stored session played, as it kept it: its sound, and its picture."""
+
+    @api.get("/api/sessions/{session_id}/song" + SOUND)
+    def session_song_sound(services: Using, session_id: str) -> FileResponse:
+        song = folder_of(services, session_id) / c.SONG_DIR
+        if not song.is_dir():
+            raise HTTPException(NOT_FOUND, "the session kept no song")
+        return file_of(audio_in(song))
+
+    @api.get("/api/sessions/{session_id}/song" + COVER)
+    def session_song_cover(services: Using, session_id: str) -> FileResponse:
+        return cover_of(folder_of(services, session_id) / c.SONG_DIR)
 
 
-def kept_file(path: Path, media_type: str) -> FileResponse:
-    """A file of the style a session played, which a session from before styles has not."""
+def cover_of(song: Path) -> FileResponse:
+    """The picture of the song in the folder ``song``; not found when it carries none."""
+    cover = cover_in(song)
+    if cover is None:
+        raise HTTPException(NOT_FOUND, "the song carries no picture")
+    return file_of(cover)
+
+
+def file_of(path: Path) -> FileResponse:
+    """A song, a recording or a picture, as what it is; one that is not there is not found."""
     if not path.is_file():
         raise HTTPException(NOT_FOUND, f"no {path.name}")
-    return FileResponse(path, media_type=media_type)
+    media = MEDIA_TYPES.get(path.suffix.lower(), BINARY)
+    return FileResponse(path, media_type=media)
 
 
 def add_change_routes(api: FastAPI) -> None:
@@ -303,15 +339,102 @@ def add_new_session_routes(api: FastAPI) -> None:
             raise HTTPException(INVALID, str(problem)) from problem
 
 
-def add_style_routes(api: FastAPI) -> None:
-    """A sample of a style of music, to be played."""
+def song_folder(services: Services, song_id: str) -> Path:
+    """The folder of a song of the library; a song that is not there is not found."""
+    try:
+        return services.library.folder(song_id)
+    except AdamusError as problem:
+        raise HTTPException(NOT_FOUND, str(problem)) from problem
 
-    @api.get("/api/styles/{style_id}" + SOUND)
-    def sample(services: Using, style_id: str) -> FileResponse:
-        path = c.STYLE_FILES / style_id / c.FILE_SAMPLE
-        if services.new_session.style(style_id) is None or not path.is_file():
-            raise HTTPException(NOT_FOUND, f"no sample of style {style_id}")
-        return FileResponse(path, media_type=AUDIO)
+
+def draft_folder(services: Services, draft_id: str) -> Path:
+    """The folder of a draft; a draft that is not there is not found."""
+    try:
+        return services.library.draft_folder(draft_id)
+    except AdamusError as problem:
+        raise HTTPException(NOT_FOUND, str(problem)) from problem
+
+
+def add_song_routes(api: FastAPI) -> None:
+    """The library of songs: listed, played, deleted."""
+
+    @api.get("/api/songs")
+    def songs(services: Using, offset: Offset, limit: PageSize) -> SongPage:
+        return page_of(services.library.songs(), offset, limit)
+
+    @api.get("/api/marks")
+    def marks() -> SongMarks:
+        return marks_view()
+
+    @api.delete("/api/songs/{song_id}", status_code=NO_CONTENT)
+    def delete_song(services: Using, song_id: str) -> None:
+        song_folder(services, song_id)
+        services.library.delete(song_id)
+
+    @api.get("/api/songs/{song_id}" + SOUND)
+    def song_sound(services: Using, song_id: str) -> FileResponse:
+        return file_of(audio_in(song_folder(services, song_id)))
+
+    @api.get("/api/songs/{song_id}" + COVER)
+    def song_cover(services: Using, song_id: str) -> FileResponse:
+        return cover_of(song_folder(services, song_id))
+
+
+def add_draft_routes(api: FastAPI) -> None:
+    """Drafts, where a song is changed: of a file of this computer, which then goes into the
+    library, or of a song of the library, which it then takes the place of."""
+
+    @api.post("/api/drafts")
+    def draft_of_file(services: Using, request: DraftOfFile) -> Song:
+        try:
+            return song_view(services.library.draft(Path(request.path)))
+        except (AdamusError, OSError) as problem:
+            raise HTTPException(INVALID, str(problem)) from problem
+
+    @api.post("/api/songs/{song_id}/draft")
+    def draft_of_song(services: Using, song_id: str) -> Song:
+        song_folder(services, song_id)
+        try:
+            return song_view(services.library.draft_of(song_id))
+        except (AdamusError, OSError) as problem:
+            raise HTTPException(INVALID, str(problem)) from problem
+
+    @api.post("/api/drafts/{draft_id}/marks")
+    def mark(services: Using, draft_id: str, request: SongMark) -> Song:
+        draft_folder(services, draft_id)
+        library = services.library
+        try:
+            return song_view(library.mark(draft_id, request.start_s, request.end_s, request.mark))
+        except AdamusError as problem:
+            raise HTTPException(INVALID, str(problem)) from problem
+
+    @api.post("/api/drafts/{draft_id}/keep")
+    def keep(services: Using, draft_id: str, request: DraftKept) -> Song:
+        draft_folder(services, draft_id)
+        picture = None if request.picture is None else Path(request.picture)
+        try:
+            return song_view(
+                services.library.keep(draft_id, request.title, request.artist, picture)
+            )
+        except (AdamusError, OSError) as problem:
+            raise HTTPException(INVALID, str(problem)) from problem
+
+    @api.delete("/api/drafts/{draft_id}", status_code=NO_CONTENT)
+    def discard(services: Using, draft_id: str) -> None:
+        draft_folder(services, draft_id)
+        services.library.discard(draft_id)
+
+
+def add_draft_file_routes(api: FastAPI) -> None:
+    """A draft to be played, and its picture."""
+
+    @api.get("/api/drafts/{draft_id}" + SOUND)
+    def draft_sound(services: Using, draft_id: str) -> FileResponse:
+        return file_of(audio_in(draft_folder(services, draft_id)))
+
+    @api.get("/api/drafts/{draft_id}" + COVER)
+    def draft_cover(services: Using, draft_id: str) -> FileResponse:
+        return cover_of(draft_folder(services, draft_id))
 
 
 def add_run_routes(api: FastAPI) -> None:

@@ -3,11 +3,11 @@ everything the session holds between those two moments, as one JSON document.
 
 It reads without the window: the session and where its folder is, the part in the time of the
 timeline (as the app shows it too) and in samples, a summary of the part, then its data: the
-blocks of the protocol over it, every step of the detector in it, the music and how far it was
-steered, every electrode, the lines of the log, the events, what the music generator was sent,
-the configuration the session ran with and its files. Times are seconds of the timeline: 0 is
-the first sample of EEG. A table is its columns and its rows; a list of numbers stays on one
-line, so that it reads as a table.
+blocks of the protocol over it, every step of the detector in it, the music and the state it
+was told to follow, every electrode, the lines of the log, the events, where the music went in
+its song, the configuration the session ran with and its files. Times are seconds of the
+timeline: 0 is the first sample of EEG. A table is its columns and its rows; a list of numbers
+stays on one line, so that it reads as a table.
 """
 
 import json
@@ -29,8 +29,8 @@ from adamus.server.timeline import (
     LOG,
     MUSIC,
     SessionTracks,
-    control_steps,
     step_times,
+    told_spans,
 )
 from adamus.session_format import Tick, name_of
 
@@ -45,12 +45,12 @@ ROW_MARKED = r'"<row (\d+)>"'
 SPREAD = (np.min, np.max, np.std)  # of the samples of an electrode in the part
 SAMPLE_0_LINE = 2  # of eeg.csv: its first line names the electrodes
 FILES = (
-    c.FILE_TICKS, c.FILE_FILTERED, c.FILE_RAW, c.FILE_EVENTS, c.FILE_GENERATOR, c.FILE_LOG,
-    c.FILE_PD_LOG, c.FILE_AUDIO, c.FILE_META, c.FILE_METRICS, c.FILE_CONFIG,
-)  # fmt: skip
+    c.FILE_TICKS, c.FILE_FILTERED, c.FILE_RAW, c.FILE_EVENTS, c.FILE_MUSIC, c.FILE_LOG,
+    c.FILE_AUDIO, c.SONG_DIR, c.FILE_META, c.FILE_METRICS, c.FILE_CONFIG,
+)  # fmt: skip  # the song: a folder
 STEP_COLUMNS = [
     "k", "end_s", "t_eeg", "block_index", "block_label", "full_window", "valid", "f", "f_held",
-    "score", "w_focus", "sent_after_s",
+    "score", "told", "sent_after_s",
 ]  # fmt: skip
 EEG_COLUMNS = [
     "electrode", "raw_min_uv", "raw_max_uv", "raw_sd_uv", "filtered_min_uv", "filtered_max_uv",
@@ -193,21 +193,21 @@ def events_in(session: SessionFolder, start_s: float, end_s: float) -> list[dict
     ]
 
 
-def generator_in(session: SessionFolder, start_s: float, end_s: float) -> list[dict[str, Any]]:
-    """What the music generator was sent in the part, as generator.jsonl holds it, each with its
-    time on the timeline."""
+def decisions_in(session: SessionFolder, start_s: float, end_s: float) -> list[dict[str, Any]]:
+    """Where the music went in its song in the part, as music.jsonl holds it, each with the time
+    on the timeline of the samples received when it was noted."""
     return [
-        {"time_s": rounded(sent["n"] / session.fs, SECONDS), **sent}
-        for sent in session.generator_messages
-        if start_s <= sent["n"] / session.fs <= end_s
+        {"time_s": rounded(went["n"] / session.fs, SECONDS), **went}
+        for went in session.music_decisions
+        if start_s <= went["n"] / session.fs <= end_s
     ]
 
 
 def summary_data(
     session: SessionFolder, tracks: SessionTracks, start_s: float, end_s: float
 ) -> dict[str, Any]:
-    """The part in short: the blocks asked for in it, what the detector found in each, how the
-    music was steered, and how many lines and events of which kind it holds."""
+    """The part in short: the blocks asked for in it, what the detector found in each, which
+    states the music was told, and how many lines and events of which kind it holds."""
     timeline = tracks.timeline
     blocks = [
         {"index": index, "label": label, "from_s": rounded(max(start, start_s), SECONDS),
@@ -216,19 +216,19 @@ def summary_data(
     ]  # fmt: skip
     steps = [tick for _, _, tick in steps_in(session, start_s, end_s)]
     stepped = dict.fromkeys((tick["block_index"], tick["block_label"]) for tick in steps)
-    levels = [
-        step.value
-        for step in control_steps(session, timeline.start_s, timeline.end_s)
-        if overlaps(step.start_s, step.end_s, start_s, end_s) and step.value is not None
+    told = [
+        state
+        for start, end, state in told_spans(session, timeline.start_s, timeline.end_s)
+        if overlaps(start, end, start_s, end_s)
     ]
     said = Counter(line.severity for line in log_lines_in(tracks, start_s, end_s))
     events = Counter(event["type"] for event in events_in(session, start_s, end_s))
     return {
         "blocks": blocks,
         "detection_by_block": [found_in(index, label, steps) for index, label in stepped],
-        "music_toward_focus": None if not levels else {
-            "first": rounded(levels[0], CHANCE), "last": rounded(levels[-1], CHANCE),
-            "lowest": rounded(min(levels), CHANCE), "highest": rounded(max(levels), CHANCE),
+        "music_told": None if not told else {
+            "first": told[0], "last": told[-1],
+            "focus_at_all": c.FOCUS in told, "rest_at_all": c.REST in told,
         },
         "log_lines": {
             "all": sum(said.values()), "warnings": said["warning"], "errors": said["error"],
@@ -274,7 +274,7 @@ def step_row(end: float, tick: Tick) -> list[Any]:
     return [
         tick["k"], rounded(end, SECONDS), tick["t_eeg"], tick["block_index"], tick["block_label"],
         tick["full_window"], tick["valid"], rounded(tick["f"], CHANCE), tick["f_held"],
-        rounded(tick["score"], CHANCE), rounded(tick["w_focus"], CHANCE),
+        rounded(tick["score"], CHANCE), tick["told"],
         None if sent is None else rounded(sent - tick["t_eeg"], CHANCE),
         *(rounded(value, MICROVOLTS) for value in tick["max_abs_uv"]),
     ]  # fmt: skip
@@ -285,12 +285,11 @@ def music_data(
 ) -> dict[str, Any]:
     timeline = tracks.timeline
     audio = next((track for track in all_tracks(tracks) if isinstance(track, AudioTrack)), None)
-    steered = [
-        [rounded(max(step.start_s, start_s), SECONDS), rounded(min(step.end_s, end_s), SECONDS),
-         rounded(step.value, CHANCE)]
-        for step in control_steps(session, timeline.start_s, timeline.end_s)
-        if overlaps(step.start_s, step.end_s, start_s, end_s)
-    ]  # fmt: skip
+    told = [
+        [rounded(max(start, start_s), SECONDS), rounded(min(end, end_s), SECONDS), state]
+        for start, end, state in told_spans(session, timeline.start_s, timeline.end_s)
+        if overlaps(start, end, start_s, end_s)
+    ]
     data: dict[str, Any] = {"recorded": audio is not None}
     if audio is not None:
         data |= {
@@ -298,7 +297,7 @@ def music_data(
             "end_s": rounded(audio.start_s + audio.duration_s, SECONDS),
             **loudness(audio, tracks.samples[MUSIC], start_s, end_s),
         }
-    data["toward_focus"] = table(["from_s", "to_s", "value"], steered)
+    data["told"] = table(["from_s", "to_s", "state"], told)
     return data
 
 
@@ -362,7 +361,7 @@ def excerpt_of(folder: Path, tracks: SessionTracks, start_s: float, end_s: float
     """The part of the session in ``folder`` from ``start_s`` to ``end_s`` of its timeline, cut
     out of its data; ``tracks`` are what its timeline shows."""
     session = load_session_folder(folder)
-    present = [name for name in FILES if (folder / name).is_file()]
+    present = [name for name in FILES if (folder / name).exists()]
     data = {
         "session": session_data(session),
         "part": part_data(session, start_s, end_s),
@@ -373,7 +372,7 @@ def excerpt_of(folder: Path, tracks: SessionTracks, start_s: float, end_s: float
         "eeg": eeg_data(tracks, start_s, end_s),
         "log": log_data(tracks, start_s, end_s),
         "events": events_in(session, start_s, end_s),
-        "generator": generator_in(session, start_s, end_s),
+        "music_decisions": decisions_in(session, start_s, end_s),
         "configuration": session.settings,
         "files": {name: str((folder / name).resolve()) for name in present},
     }

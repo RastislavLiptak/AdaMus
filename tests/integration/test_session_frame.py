@@ -19,15 +19,12 @@ from adamus.detection.focus_detector import load_models
 from adamus.detection.signal_processing import Steps
 from adamus.errors import AdamusError
 from adamus.realtime import session_recorder
-from adamus.realtime.chords import voicing
-from adamus.realtime.generator_messages import session_start_messages
 from adamus.session_format import (
     REASON_END_OF_STREAM,
     REASON_ERROR,
     REASON_USER,
     Event,
     Meta,
-    read_jsonl,
 )
 from tests.support.finished_sessions import (
     CONTEXT,
@@ -41,105 +38,76 @@ from tests.support.finished_sessions import (
 )
 from tests.support.short_sessions import (
     CONTROL,
-    FOCUS_STYLE,
-    IDLE_STYLE,
     SHORT,
     STEPS,
-    STYLE,
     short_session,
 )
 from tests.support.stand_in_devices import (
+    SPEAKERS,
     StandInClock,
-    StandInGenerator,
+    StandInMusic,
     StandInSource,
 )
+from tests.support.stand_in_songs import place_song
 from tests.support.synthetic_dataset import write_recording
+
+MUSIC_GONE = "The audio output Speakers was disconnected, so the music could not be heard."
+
+
+def with_music(tmp_path, music_of_clock, protocol=CONTROL, **options):
+    """A session over the synthetic signal of ``protocol`` with the music ``music_of_clock``
+    makes of its clock."""
+    clock = StandInClock()
+    return FinishedSession(tmp_path, config_with(protocol), synthetic_matrix(protocol),
+                           music=music_of_clock(clock), clock=clock, **options)  # fmt: skip
 
 
 class TestSessionFrame:
     def test_events_in_order(self, short):
         kinds = [event["type"] for event in short.events]
-        started = len(
-            session_start_messages(config_with().generator, STYLE, short.directory / c.FILE_AUDIO)
-        )
-        assert kinds[: started + 2] == ["SESSION_START", "STREAM_START"] + ["FUDI"] * started
-        assert kinds[started + 2] == "BLOCK_START"
+        assert kinds[:4] == ["SESSION_START", "STREAM_START", "MUSIC_START", "BLOCK_START"]
         assert set(kinds) == {
-            "SESSION_START", "FUDI", "STREAM_START", "BLOCK_START", "SESSION_END",
+            "SESSION_START", "STREAM_START", "MUSIC_START", "BLOCK_START", "MUSIC_END",
+            "SESSION_END",
         }  # fmt: skip
-        assert kinds[-3:] == ["FUDI", "FUDI", "SESSION_END"]
+        assert kinds[-2:] == ["MUSIC_END", "SESSION_END"]
+        assert short.events_of("MUSIC_END")[0]["dropouts"] == 0
         times = [event["t"] for event in short.events]
         assert times == sorted(times)
         assert all(list(event)[:3] == ["t", "n", "type"] for event in short.events)
         assert all(set(event) <= set(Event.__annotations__) for event in short.events)
 
-    def test_generator_messages_of_a_session(self, short):
-        audio = short.directory / "audio.wav"
-        assert short.session_messages() == [
-            "reset;", "cfgmusiccoca 5;", "cfgnotes 5;", f"temperature {STYLE.temperature};",
-            f"topk {STYLE.top_k};", f"prompt 0 {IDLE_STYLE} 1.000;",
-            f"prompt 1 {FOCUS_STYLE} 0.000;", f"volume {STYLE.rest_volume_db:.2f};", "drumless 1;",
-            f"rec open {audio};", "rec start;", "bypass 0;", "bypass 1;", "rec stop;",
-        ]  # fmt: skip
+    def test_the_music_starts_at_rest_into_the_recording_of_the_session_and_stops_once(self, short):
+        assert short.music.recording == short.directory / c.FILE_AUDIO
+        assert (short.music.started, short.music.stopped) == (1, 1)
+        (began,) = short.events_of("MUSIC_START")
+        first = short.music_lines[0]
+        assert (first["kind"], first["mark"], first["from_s"], first["t"]) == (
+            "start", c.REST, None, began["t"],
+        )  # fmt: skip
 
-    def test_everything_the_generator_is_sent_is_recorded_in_its_order(self, short):
-        recorded = read_jsonl(short.directory / c.FILE_GENERATOR)
-        assert [line["msg"] for line in recorded] == short.generator.messages
-        assert [line["t"] for line in recorded] == sorted(line["t"] for line in recorded)
-        assert recorded[0]["n"] == 0 and recorded[-1]["n"] == 40 * FS
+    def test_the_music_is_told_the_state_of_every_step_that_was_sent(self, short):
+        sent = [tick for tick in short.ticks if tick["t_sent"] is not None]
+        told = [tick["told"] for tick in sent]
+        assert short.music.states == told and len(told) == STEPS
+        assert {c.REST, c.FOCUS} <= set(told)  # the blocks were found
 
-    def test_the_chords_play_from_the_start_of_the_music_to_its_end(self, short):
-        sent = short.generator.messages
-        woken = sent.index("bypass 0;")
-        assert sent[woken + 1] == " ".join(f"noteon {note};" for note in voicing(STYLE.chords[0]))
-        chords = [message for message in sent if "noteon" in message]
-        assert len(chords) >= 2  # it moved on to the next chord
-        held = [int(m.split()[1].rstrip(";")) for m in chords[-1].split("; ") if "noteon" in m]
-        let_go = sent[sent.index("bypass 1;") - 1]
-        assert let_go == " ".join(f"noteoff {note};" for note in held)  # nothing left held
+    def test_where_the_music_went_is_recorded_in_its_order(self, short):
+        went = short.music_lines
+        switches = [line for line in went if line["kind"] == "switch"]
+        assert switches and all(
+            a["mark"] != b["mark"] for a, b in zip(switches, switches[1:], strict=False)
+        )
+        assert [line["t"] for line in went] == sorted(line["t"] for line in went)
+        assert all(set(line) == {"t", "n", "kind", "mark", "from_s", "to_s"} for line in went)
 
     def test_the_music_starts_only_once_the_stream_has_started(self, short):
         """Opening a headset can take a while; the music must not play meanwhile."""
         (stream,) = short.events_of("STREAM_START")
-        first_sent = short.events_of("FUDI")[0]
-        assert stream["t"] <= first_sent["t"]
-        assert short.events.index(stream) < short.events.index(first_sent)
+        (began,) = short.events_of("MUSIC_START")
+        assert stream["t"] <= began["t"]
+        assert short.events.index(stream) < short.events.index(began)
         assert (stream["board_id"], stream["fs"], stream["n"]) == (38, 256, 0)
-
-    def test_pd_stderr_is_copied_to_the_session_only_while_it_runs(self, short):
-        assert short.generator.output_copies == [short.directory / "pd.log", None]
-
-    def test_pd_stays_with_the_session_until_it_finished_the_recording(self, tmp_path, monkeypatch):
-        """What Pd prints while it closes audio.wav belongs to the pd.log of this session,
-        and the metrics read audio.wav only when it is whole."""
-        generator, looks = StandInGenerator(), []
-
-        def finished(path):
-            looks.append((path, generator.output_copies[-1]))
-            return len(looks) == 3
-
-        monkeypatch.setattr(session_recorder, "recording_finished", finished)
-        session = short_session(tmp_path,
-                                  generator=generator)  # fmt: skip
-        pd_log = session.directory / "pd.log"
-        assert looks == [(session.directory / "audio.wav", pd_log)] * 3
-        assert generator.output_copies == [pd_log, None]
-        assert generator.messages[-1] == "rec stop;"  # it waited after the last message
-        assert "did not finish" not in (session.directory / c.FILE_LOG).read_text()
-
-    def test_a_recording_that_is_never_finished_holds_the_session_up_only_briefly(
-        self, tmp_path, monkeypatch
-    ):
-        monkeypatch.setattr(session_recorder, "recording_finished", lambda path: False)
-        clock = StandInClock()
-        session = short_session(tmp_path,
-                                  clock=clock)  # fmt: skip
-        assert session.result.reason == REASON_END_OF_STREAM and session.error is None
-        (end,) = session.events_of("SESSION_END")
-        (stop,) = [e for e in session.events_of("FUDI") if e["msg"] == "rec stop;"]
-        assert end["t"] - stop["t"] == pytest.approx(session_recorder.RECORDING_CLOSE_S, abs=0.1)
-        log = (session.directory / c.FILE_LOG).read_text()
-        assert "WARNING adamus.realtime.session: Pd did not finish audio.wav in time" in log
 
     def test_session_end_carries_reason_and_sample_count(self, short):
         (end,) = short.events_of("SESSION_END")
@@ -150,18 +118,21 @@ class TestSessionFrame:
     def test_folder_holds_every_file_adamus_writes(self, short):
         assert {path.name for path in short.directory.iterdir()} == {
             "config.yaml", "focus_model.json", "meta.json", "raw.csv", "filtered.f32",
-            "ticks.jsonl", "events.jsonl", "generator.jsonl", "adamus.log",
-            "sample.wav", "cover.png",
+            "ticks.jsonl", "events.jsonl", "music.jsonl", "adamus.log", "song", "audio.wav",
         }  # fmt: skip
         assert short.directory.name.endswith("_S01")
 
-    def test_the_session_keeps_the_sample_and_the_cover_of_its_style(self, short):
-        """Its own copies: the session is shown as it was played, whatever the program ships
-        later."""
-        for name in (c.FILE_SAMPLE, c.FILE_COVER):
-            shipped = c.STYLE_FILES / STYLE.id / name
-            assert (short.directory / name).read_bytes() == shipped.read_bytes(), name
-        assert "DEBUG" in (short.directory / c.FILE_LOG).read_text()
+    def test_the_music_is_given_the_folder_of_the_session_to_copy_its_song_into(self, tmp_path):
+        """The whole song, its file, analysis, marks and picture: the session can be played
+        again whatever the library holds later."""
+        song = place_song(tmp_path / "library", pictured=True)
+        session = with_music(tmp_path, lambda clock: StandInMusic(clock, song=song), SHORT)
+        kept = session.directory / c.SONG_DIR
+        assert sorted(path.name for path in kept.iterdir()) == sorted(
+            path.name for path in song.iterdir()
+        )
+        assert (kept / c.FILE_SONG).read_text() == (song / c.FILE_SONG).read_text()
+        assert "DEBUG" in (session.directory / c.FILE_LOG).read_text()
 
     def test_model_copy_is_the_model_the_detector_ran_with(self, short):
         copied = json.loads((short.directory / c.FOCUS_MODEL_FILE).read_text())
@@ -174,7 +145,7 @@ class TestSessionFrame:
     def test_meta_describes_what_the_session_ran_on(self, short):
         meta = json.loads((short.directory / c.FILE_META).read_text())
         assert list(meta) == list(Meta.__annotations__)  # what the readers are typed against
-        assert meta["pd"] == "Pd-0.0-stand-in"
+        assert meta["audio_output"] == SPEAKERS
         assert (meta["board_id"], meta["fs"]) == (38, 256)
         # Where the raw file holds what: every electrode of the source, the time, the markers.
         assert meta["electrode_rows"] == {"TP9": 1, "AF7": 2, "AF8": 3, "TP10": 4}
@@ -194,8 +165,7 @@ class TestSessionFrame:
             tmp_path / "my data; 2026", config_with(SHORT), synthetic_matrix(SHORT)
         )
         assert session.result.reason == REASON_END_OF_STREAM
-        audio = str(session.directory / "audio.wav").replace(" ", "\\ ").replace(";", "\\;")
-        assert f"rec open {audio};" in session.session_messages()
+        assert session.music.recording == session.directory / c.FILE_AUDIO
 
     def test_a_stop_requested_while_the_session_was_starting_ends_it_after_the_start(
         self, tmp_path
@@ -204,8 +174,10 @@ class TestSessionFrame:
         assert session.result.reason == REASON_USER
         kinds = [event["type"] for event in session.events]
         assert kinds[:2] == ["SESSION_START", "STREAM_START"]
-        assert kinds[-3:] == ["FUDI", "FUDI", "SESSION_END"]  # the music started, then ended
-        assert set(kinds) == {"SESSION_START", "STREAM_START", "FUDI", "SESSION_END"}
+        assert kinds[-3:] == ["MUSIC_START", "MUSIC_END", "SESSION_END"]  # started, then ended
+        assert set(kinds) == {
+            "SESSION_START", "STREAM_START", "MUSIC_START", "MUSIC_END", "SESSION_END",
+        }  # fmt: skip
         assert session.ticks == [] and session.source.stopped
 
 
@@ -214,8 +186,7 @@ class TestEndings:
         session = short_session(tmp_path, stop_after_steps=20)
         assert session.result.reason == REASON_USER and session.result.interrupted is False
         assert session.events[-1]["reason"] == REASON_USER
-        assert session.session_messages()[-2:] == ["bypass 1;", "rec stop;"]
-        assert session.source.stopped
+        assert session.music.stopped == 1 and session.source.stopped
 
     def test_samples_received_before_the_stream_stopped_are_recorded_but_not_sent(self, tmp_path):
         """raw.csv holds every sample of the board; the step files must cover them all."""
@@ -225,7 +196,7 @@ class TestEndings:
         assert session.ticks[-4]["t_sent"] is not None
         for tick in session.ticks[-3:]:
             assert tick["t_sent"] is None and tick["valid"] and tick["f"] is not None
-        assert len(session.generator.weights) == sum(t["t_sent"] is not None for t in session.ticks)
+        assert len(session.music.states) == sum(t["t_sent"] is not None for t in session.ticks)
         assert session.events[-1]["n"] == 70 * FS
 
     def test_playback_ends_when_no_sample_arrived_for_the_stream_timeout(self, tmp_path):
@@ -233,7 +204,7 @@ class TestEndings:
         session = FinishedSession(tmp_path, config, synthetic_matrix(SHORT)[:, : 6 * FS])
         last_samples = session.ticks[-1]["t_proc_start"]  # processed as they arrived
         (end,) = session.events_of("SESSION_END")
-        (stop,) = [e for e in session.events_of("FUDI") if e["msg"] == "bypass 1;"]
+        (stop,) = session.events_of("MUSIC_END")
         waited = stop["t"] - last_samples
         assert 2.0 <= waited <= 2.0 + config.poll_s + 0.01  # not one poll more
         assert session.result.reason == REASON_END_OF_STREAM and end["t"] >= stop["t"]
@@ -247,18 +218,24 @@ class TestEndings:
         meta = json.loads((session.directory / c.FILE_META).read_text())
         assert meta["playback_path"] is None
 
-    def test_generator_that_fails_during_a_step_is_an_error(self, tmp_path):
-        session = FinishedSession(
-            tmp_path,
-            config_with(CONTROL),
-            synthetic_matrix(CONTROL),
-            generator=StandInGenerator(fail_after_steps=3),
-        )
+    def test_music_that_fails_during_a_step_is_an_error(self, tmp_path):
+        session = with_music(tmp_path, lambda clock: StandInMusic(clock, fail_after_steps=3))
         assert session.result.reason == REASON_ERROR
         (error,) = session.events_of("ERROR")
-        assert (error["where"], error["message"]) == ("loop", "OSError: broken pipe")
+        assert (error["where"], error["message"]) == ("loop", "OSError: the output is gone")
         assert session.events[-1]["type"] == "SESSION_END" and session.source.stopped
-        assert session.session_messages()[-2:] == ["bypass 1;", "rec stop;"]
+        assert session.music.stopped == 1
+
+    def test_music_that_is_heard_nowhere_any_more_ends_the_session_with_why(self, tmp_path):
+        class Gone(StandInMusic):
+            def problem(self):
+                return MUSIC_GONE if len(self.states) >= 5 else None
+
+        session = with_music(tmp_path, Gone)
+        assert session.result.reason == REASON_ERROR
+        (error,) = session.events_of("ERROR")
+        assert (error["where"], error["message"]) == ("music", MUSIC_GONE)
+        assert session.music.stopped == 1 and session.source.stopped
 
     def test_samples_that_came_with_a_failing_block_start_are_still_recorded(self, tmp_path):
         """The marker of the second block cannot be put into the stream: the session fails,
@@ -281,34 +258,37 @@ class TestEndings:
         """A read of four windows makes four steps ready at once; the second fails and
         leaves the other two waiting. The read after the failure brings all the rest."""
         source = StandInSource(synthetic_matrix(CONTROL), chunk=4 * Steps.at(FS).window)
-        failing = StandInGenerator(fail_after_steps=1)
-        session = FinishedSession(tmp_path, config_with(CONTROL), source=source, generator=failing)
-        assert session.error == "OSError: broken pipe"
+        clock = StandInClock()
+        failing = StandInMusic(clock, fail_after_steps=1)
+        session = FinishedSession(tmp_path, config_with(CONTROL), source=source, music=failing,
+                                  clock=clock)  # fmt: skip
+        assert session.error == "OSError: the output is gone"
         received = np.loadtxt(session.directory / c.FILE_RAW, delimiter="\t", ndmin=2).shape[0]
         assert [t["k"] for t in session.ticks] == list(range(Steps.at(FS).count(received)))
 
     def test_of_several_failures_the_first_one_is_recorded(self, tmp_path):
-        """The generator fails during a step, then the stream fails to stop as well."""
+        """The music fails during a step, then the stream fails to stop as well."""
 
         class StuckSource(StandInSource):
             def stop(self):
                 super().stop()
                 raise OSError("the headset does not answer")
 
+        clock = StandInClock()
         session = FinishedSession(
             tmp_path, config_with(CONTROL), source=StuckSource(synthetic_matrix(CONTROL)),
-            generator=StandInGenerator(fail_after_steps=3),
+            music=StandInMusic(clock, fail_after_steps=3), clock=clock,
         )  # fmt: skip
         assert session.result.reason == REASON_ERROR
         (error,) = session.events_of("ERROR")
-        assert (error["where"], error["message"]) == ("loop", "OSError: broken pipe")
+        assert (error["where"], error["message"]) == ("loop", "OSError: the output is gone")
         assert session.events[-1]["type"] == "SESSION_END"
 
     @pytest.mark.parametrize(
         ("chunk", "held_back"),
         [(64, 300), (64, 0), (1024, 0)],  # samples after the stop; steps left in the same chunk
     )
-    def test_a_step_whose_weights_could_not_be_sent_is_recorded_once(
+    def test_a_step_whose_state_could_not_be_told_is_recorded_once(
         self, tmp_path, chunk, held_back
     ):
         """Every step is processed exactly once: f goes on as in a session where nothing failed,
@@ -316,8 +296,9 @@ class TestEndings:
         matrix = synthetic_matrix(CONTROL)
         clean = FinishedSession(tmp_path / "clean", config_with(CONTROL), matrix,
                                 chunk=chunk, held_back=held_back)  # fmt: skip
+        clock = StandInClock()
         failed = FinishedSession(tmp_path / "failed", config_with(CONTROL), matrix,
-                                 generator=StandInGenerator(fail_after_steps=20),
+                                 music=StandInMusic(clock, fail_after_steps=20), clock=clock,
                                  chunk=chunk, held_back=held_back)  # fmt: skip
         assert failed.result.reason == REASON_ERROR
         steps = [tick["k"] for tick in failed.ticks]
@@ -346,12 +327,9 @@ class TestEndings:
         session = short_session(tmp_path, held_back=13)
         assert session.result.reason == REASON_ERROR
         assert session.error == f"{type(problem).__name__}: {problem}"
-        assert [event["type"] for event in session.events[-4:]] == [
-            "ERROR",
-            "FUDI",
-            "FUDI",
-            "SESSION_END",
-        ]
+        assert [event["type"] for event in session.events[-3:]] == [
+            "ERROR", "MUSIC_END", "SESSION_END",
+        ]  # fmt: skip
         assert len(session.events_of("ERROR")) == 1  # the repeated failure is not a second error
         assert session.source.stopped and [tick["k"] for tick in session.ticks] == [0, 1, 2]
 
@@ -380,20 +358,19 @@ class TestEndings:
         }
         assert session.events_of("ERROR")[0]["where"] == "loop"
 
-    def test_generator_that_cannot_be_put_to_sleep_does_not_keep_the_stream_open(self, tmp_path):
-        class DeafAtTheEnd(StandInGenerator):
-            def send(self, message):
-                if message.startswith("bypass 1"):
-                    raise AdamusError("the generator does not answer")
-                super().send(message)
+    def test_music_that_cannot_be_stopped_does_not_keep_the_stream_open(self, tmp_path):
+        class DeafAtTheEnd(StandInMusic):
+            def stop(self):
+                super().stop()
+                raise AdamusError("the output does not answer")
 
-        session = short_session(tmp_path, generator=DeafAtTheEnd())
+        session = with_music(tmp_path, DeafAtTheEnd, SHORT)
         assert (session.result.reason, session.error) == (
             REASON_ERROR,
-            "the generator does not answer",
+            "the output does not answer",
         )
-        assert session.source.stopped and session.generator.output_copies[-1] is None
-        assert session.events_of("ERROR")[0]["where"] == "generator"
+        assert session.source.stopped and session.music_lines  # where it went is still noted
+        assert session.events_of("ERROR")[0]["where"] == "music"
         assert session.events[-1]["type"] == "SESSION_END"
 
     def test_stream_that_cannot_be_stopped_is_an_error_with_a_closed_record(self, tmp_path):
@@ -420,8 +397,7 @@ class TestEndings:
         assert [e["type"] for e in session.events] == ["SESSION_START", "ERROR", "SESSION_END"]
         assert session.events_of("ERROR")[0]["where"] == "source"
         assert session.ticks == [] and not session.source.stopped
-        assert session.session_messages() == []  # the music never started
-        assert session.generator.output_copies == []
+        assert session.music.started == 0 and session.music_lines == []  # it never started
 
     def test_failure_to_write_the_record_is_an_error_too(self, tmp_path, monkeypatch):
         def disk_full(self, meta):
@@ -439,7 +415,7 @@ class TestEndings:
     def test_a_failure_that_cannot_be_recorded_still_finishes_the_session(
         self, tmp_path, monkeypatch
     ):
-        """A full disk: the generator is still put to sleep and the stream stopped."""
+        """A full disk: the music is still stopped and the stream too."""
         record = session_recorder.SessionRecorder.event
 
         def disk_full_for_errors(self, kind, *arguments, **fields):
@@ -448,26 +424,21 @@ class TestEndings:
             return record(self, kind, *arguments, **fields)
 
         monkeypatch.setattr(session_recorder.SessionRecorder, "event", disk_full_for_errors)
-        session = FinishedSession(
-            tmp_path, config_with(CONTROL), synthetic_matrix(CONTROL),
-            generator=StandInGenerator(fail_after_steps=3),
-        )  # fmt: skip
+        session = with_music(tmp_path, lambda clock: StandInMusic(clock, fail_after_steps=3))
         assert session.result.reason == REASON_ERROR
-        assert session.session_messages()[-2:] == ["bypass 1;", "rec stop;"]
+        assert session.music.stopped == 1
         assert session.source.stopped and session.events[-1]["type"] == "SESSION_END"
 
-    def test_generator_that_fails_when_the_session_wakes_it_up(self, tmp_path):
-        class DeafAtTheStart(StandInGenerator):
-            def send(self, message):
-                if message.startswith("reset"):
-                    raise AdamusError("cannot send to Pd: broken pipe")
-                super().send(message)
-
-        session = short_session(tmp_path, generator=DeafAtTheStart())
+    def test_music_that_cannot_start_is_an_error_after_the_stream_started(self, tmp_path):
+        failing = "Speakers is not connected, or does not play in stereo"
+        session = with_music(
+            tmp_path, lambda clock: StandInMusic(clock, fail_to_start=failing), SHORT
+        )
         assert session.result.reason == REASON_ERROR
         (error,) = session.events_of("ERROR")
-        assert (error["where"], error["message"]) == ("generator", "cannot send to Pd: broken pipe")
+        assert (error["where"], error["message"]) == ("music", failing)
         assert session.ticks == [] and session.source.stopped  # the stream had started first
+        assert session.music.stopped == 1 and session.events_of("MUSIC_START") == []
 
     def test_recording_without_a_single_sample_ends_as_end_of_stream(self, tmp_path):
         session = short_session(tmp_path, synthetic_matrix(SHORT)[:, :0])

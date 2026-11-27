@@ -18,7 +18,6 @@ from tests.support.project_paths import (
     require_trained_models,
     what_the_program_keeps,
 )
-from tests.support.stand_in_generator_files import install_stand_in_generator
 
 TEST_MEMORY = parallel.GIGABYTE  # a process of the tests at the most: a session
 
@@ -76,12 +75,6 @@ def default_protocol():
 def synthetic_default_signals(default_protocol):
     """The synthetic recording of the default protocol: the detector's electrodes, 480 s."""
     return synthetic_signals(default_protocol)
-
-
-@pytest.fixture
-def stand_in_generator(tmp_path):
-    """The ``generator`` section of a configuration that points at a stand-in installation."""
-    return install_stand_in_generator(tmp_path / "generator")
 
 
 PLAYED_PROTOCOL = [["REST", 20], ["FOCUS", 20], ["REST", 10], ["FREE", 0]]

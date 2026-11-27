@@ -1,5 +1,4 @@
-"""session_recorder: the files adamus writes into a session folder, and when Pd has finished
-the one it writes."""
+"""session_recorder: the files adamus writes into a session folder."""
 
 import datetime
 import json
@@ -8,19 +7,17 @@ import re
 import subprocess
 import sys
 import time
-import wave
 from pathlib import Path
 
 import numpy as np
 import pytest
-import soundfile
 
 import adamus
 from adamus import constants as c
 from adamus.config import load_config
 from adamus.realtime import session_recorder
 from adamus.realtime.session_recorder import SessionRecorder
-from adamus.session_format import read_jsonl, read_log_line
+from adamus.session_format import MusicDecision, read_jsonl, read_log_line
 
 MOMENT_S = 5.0  # a line of the log was written within this of now
 STARTED = datetime.datetime(2026, 11, 10, 15, 4, 12).timestamp()
@@ -59,17 +56,16 @@ class TestFolder:
         session.open()
         assert len(logging.getLogger("adamus").handlers) == len(handlers) + 1
         assert sorted(p.name for p in session.directory.iterdir()) == [
-            "adamus.log", "events.jsonl", "filtered.f32", "generator.jsonl", "ticks.jsonl",
+            "adamus.log", "events.jsonl", "filtered.f32", "music.jsonl", "ticks.jsonl",
         ]  # fmt: skip
         assert logging.getLogger("adamus").level == logging.DEBUG  # all of it into adamus.log
         session.close()
         assert logging.getLogger("adamus").handlers == handlers
         assert logging.getLogger("adamus").level == level  # as it was before the session
 
-    def test_paths_of_the_files_written_by_brainflow_and_pd(self, recorder):
+    def test_paths_of_the_files_written_by_brainflow_and_the_music(self, recorder):
         assert recorder.raw_csv == recorder.directory / "raw.csv"
         assert recorder.audio_wav == recorder.directory / "audio.wav"
-        assert recorder.pd_log == recorder.directory / "pd.log"
 
 
 class TestConfigAndMeta:
@@ -79,7 +75,7 @@ class TestConfigAndMeta:
 
     def test_meta_holds_versions_session_facts_and_the_foreign_files(self, recorder):
         import platform
-        from importlib.metadata import PackageNotFoundError, version
+        from importlib.metadata import version
 
         recorder.write_meta({"board_id": 38, "playback_path": None})
         meta = json.loads((recorder.directory / c.FILE_META).read_text())
@@ -87,19 +83,15 @@ class TestConfigAndMeta:
         assert meta["python"] == platform.python_version()
         versions = meta["versions"]
         assert versions["brainflow"] == version("brainflow") == "5.24.0"
-        for library in ("numpy", "scipy", "librosa"):  # they decide the model and the metrics
+        # they decide the model, the metrics and how the music is played
+        for library in ("numpy", "scipy", "librosa", "sounddevice"):
             assert versions[library] == version(library)
-        try:  # the generator's Python package is optional
-            magenta_rt = version("magenta-rt")
-        except PackageNotFoundError:
-            magenta_rt = None
-        assert versions["magenta-rt"] == magenta_rt
         assert "adamus_commit" in meta
         assert (meta["board_id"], meta["playback_path"]) == (38, None)
 
 
 def test_library_that_is_not_installed_has_no_version(recorder, monkeypatch):
-    """The generator's Python package is optional: tests and analysis run without it."""
+    """A library the program runs without (an older one) is named without a version."""
 
     def only_brainflow(package):
         if package != "brainflow":
@@ -110,7 +102,7 @@ def test_library_that_is_not_installed_has_no_version(recorder, monkeypatch):
     recorder.write_meta({})
     meta = json.loads((recorder.directory / c.FILE_META).read_text())
     versions = meta["versions"]
-    assert (versions["brainflow"], versions["numpy"], versions["magenta-rt"]) == (
+    assert (versions["brainflow"], versions["numpy"], versions["sounddevice"]) == (
         "5.24.0",
         None,
         None,
@@ -182,13 +174,17 @@ class TestEvents:
             {"t": 1.0, "n": 0, "type": "ERROR", "where": "loop"}
         ]
 
-    def test_what_the_generator_is_sent_is_on_disk_at_once_in_its_order(self, recorder):
-        recorder.generator_message(1.0, 0, "reset;")
-        recorder.generator_message(1.5, 256, "noteoff 48; noteon 43; noteon 59;")
-        assert read_jsonl(recorder.directory / c.FILE_GENERATOR) == [
-            {"t": 1.0, "n": 0, "msg": "reset;"},
-            {"t": 1.5, "n": 256, "msg": "noteoff 48; noteon 43; noteon 59;"},
-        ]
+    def test_where_the_music_went_is_on_disk_at_once_in_its_order(self, recorder):
+        started: MusicDecision = {
+            "t": 1.0, "n": 0, "kind": "start", "mark": c.REST, "from_s": None, "to_s": 0.0
+        }  # fmt: skip
+        switched: MusicDecision = {
+            "t": 9.5, "n": 2176, "kind": "switch", "mark": c.FOCUS, "from_s": 8.0, "to_s": 61.5
+        }  # fmt: skip
+        recorder.music_decision(started)
+        assert read_jsonl(recorder.directory / c.FILE_MUSIC) == [started]  # before it closes
+        recorder.music_decision(switched)
+        assert read_jsonl(recorder.directory / c.FILE_MUSIC) == [started, switched]
 
 
 class TestTicks:
@@ -250,31 +246,3 @@ def test_outside_a_session_no_record_of_adamus_reaches_the_terminal():
     warn = "import logging, adamus; logging.getLogger('adamus.preflight').warning('lost')"
     run = subprocess.run([sys.executable, "-c", warn], capture_output=True, text=True, check=True)
     assert run.stderr == ""
-
-
-class TestFinishedRecording:
-    """Pd writes the length into the WAV header when it closes the file."""
-
-    def test_a_closed_file_is_finished(self, tmp_path):
-        path = tmp_path / "audio.wav"
-        soundfile.write(path, np.zeros((480, 2), dtype=np.int16), 48000)
-        assert session_recorder.recording_finished(path)
-
-    def test_a_file_still_being_written_is_not(self, tmp_path):
-        path = tmp_path / "audio.wav"
-        writing = wave.open(str(path), "wb")  # noqa: SIM115 - closed below
-        writing.setnchannels(2)
-        writing.setsampwidth(2)
-        writing.setframerate(48000)
-        writing.writeframesraw(bytes(4 * 480))  # the header still counts no frame
-        assert not session_recorder.recording_finished(path)
-        writing.close()
-        assert session_recorder.recording_finished(path)
-
-    @pytest.mark.parametrize("start", [b"", b"RIF", b"RIFX\x00\x00\x00\x00"])
-    def test_a_file_without_a_whole_header_is_not(self, tmp_path, start):
-        (tmp_path / "audio.wav").write_bytes(start)
-        assert not session_recorder.recording_finished(tmp_path / "audio.wav")
-
-    def test_no_file_is_nothing_to_wait_for(self, tmp_path):
-        assert session_recorder.recording_finished(tmp_path / "audio.wav")

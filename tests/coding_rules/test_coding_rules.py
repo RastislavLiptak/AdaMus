@@ -257,12 +257,13 @@ BASICS = ("adamus.constants", "adamus.config", "adamus.errors", "adamus.parallel
 MAY_USE = {
     "detection": (*BASICS, "adamus.detection", "adamus.protocol"),
     "evaluation": (*BASICS, "adamus.detection", "adamus.protocol", "adamus.session_format",
-                   "adamus.evaluation", "adamus.realtime.generator_messages"),
+                   "adamus.evaluation"),
     "realtime": (*BASICS, "adamus.detection", "adamus.protocol", "adamus.session_format",
-                 "adamus.datasets", "adamus.realtime"),
+                 "adamus.datasets", "adamus.song_library", "adamus.realtime"),
     "datasets": BASICS,
 }  # fmt: skip
-PART_OF_MODULE = {"protocol.py": "detection", "datasets.py": "datasets"}
+PART_OF_MODULE = {"protocol.py": "detection", "datasets.py": "datasets",
+                  "song_library.py": "datasets"}  # fmt: skip  # the songs are data too
 
 
 @pytest.mark.parametrize("path", SOURCE_FILES, ids=named)

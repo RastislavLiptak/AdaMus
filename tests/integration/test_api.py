@@ -13,7 +13,6 @@ from fastapi.testclient import TestClient
 
 from adamus import constants as c
 from adamus.activity_log import ActivityLog
-from adamus.audio_outputs import AudioOutput
 from adamus.evaluation.session_reader import load_session_folder
 from adamus.server.api import (
     MAX_PAGE,
@@ -33,7 +32,9 @@ from tests.support.finished_sessions import synthetic_signals
 from tests.support.stand_in_devices import SPEAKERS, TV
 from tests.support.stand_in_machine import StandInMachine
 from tests.support.stand_in_preflight import Checked
+from tests.support.stand_in_songs import PICTURE, SONG, place_song
 from tests.support.synthetic_dataset import write_recording
+from tests.support.synthetic_songs import write_song
 
 SHORT = [("REST", 10), ("FOCUS", 10)]
 TOKEN = "secret"
@@ -48,11 +49,12 @@ class Api:
         self.checked = Checked()
         self.activity = ActivityLog()
         self.machine = machine = StandInMachine(folder / "sessions", folder / "data")
-        self.runner = SessionRunner(self.checked, machine, self.activity, threading.Event().is_set)
+        self.song = place_song(machine.library_root, pictured=True)
+        self.runner = SessionRunner(machine, self.activity, threading.Event().is_set)
         self.services = Services(
             catalogue=SessionCatalogue(folder / "sessions", folder / "data"),
             new_session=NewSession(self.checked, machine, self.activity), runner=self.runner,
-            token=TOKEN,
+            library=machine.library, token=TOKEN,
         )  # fmt: skip
         self.client = TestClient(create_app(self.services), headers={TOKEN_HEADER: TOKEN})
 
@@ -232,41 +234,21 @@ class TestSessions:
         assert part.status_code == 206 and part.content == whole[100:200]
         assert part.headers["content-type"] == "audio/wav"
 
-    def test_a_style_has_its_sample_which_plays_from_any_point(self, api):
-        part = api.client.get("/api/styles/rock/sound", headers={"Range": "bytes=0-99"})
-        assert part.status_code == 206 and part.headers["content-type"] == "audio/wav"
-        assert part.content == (c.STYLE_FILES / "rock" / c.FILE_SAMPLE).read_bytes()[:100]
-
-    def test_a_sample_takes_the_token_in_its_address_as_a_player_asks(self, api):
-        bare = TestClient(api.client.app)
-        path = "/api/styles/folk/sound"
-        assert bare.get(path).status_code == 404
-        assert bare.get(f"{path}?token=guess").status_code == 404
-        assert bare.get(f"{path}?token={TOKEN}").status_code == 200
-        assert bare.get(f"/api/new-session?token={TOKEN}").status_code == 404  # nothing else
-
-    @pytest.mark.parametrize("path", ["jazz/sound", "..%2Fapi/sound", "folk/cover", "folk/notes"])
-    def test_a_style_that_is_not_there_has_no_files(self, api, path):
-        assert api.client.get(f"/api/styles/{path}").status_code == 404
-
-    def test_a_style_whose_file_is_missing_has_none(self, api, monkeypatch, tmp_path):
-        monkeypatch.setattr(c, "STYLE_FILES", tmp_path)
-        assert api.client.get("/api/styles/folk/sound").status_code == 404
-
-    def test_the_music_of_a_session_is_its_own_sample_and_cover_asked_for_as_a_player_would(
-        self, api
-    ):
-        """With the token in their address, as a player and an image ask without a header."""
-        bare, kept = TestClient(api.client.app), api.folder / "sessions" / api.session_id
-        for end, file, kind in [("sound", c.FILE_SAMPLE, "audio/wav"),
-                                ("cover", c.FILE_COVER, "image/png")]:  # fmt: skip
-            path = f"/api/sessions/{api.session_id}/music/{end}"
-            assert bare.get(f"{path}?token=guess").status_code == 404
-            answer = bare.get(f"{path}?token={TOKEN}")
-            assert answer.status_code == 200 and answer.headers["content-type"] == kind
-            assert answer.content == (kept / file).read_bytes()
-            (kept / file).unlink()  # a session from before styles
-            assert api.client.get(path).status_code == 404
+    def test_the_song_a_session_played_is_its_own_copy_its_sound_and_picture(self, api):
+        kept = api.folder / "sessions" / api.session_id / c.SONG_DIR
+        path = f"/api/sessions/{api.session_id}/song"
+        assert api.client.get(path + "/cover").status_code == 404  # the stand-in song carried none
+        (kept / "cover.jpg").write_bytes(b"a picture")
+        bare = TestClient(api.client.app)  # as a player and an image ask: without a header
+        answer = bare.get(f"{path}/cover?token={TOKEN}")
+        assert (answer.status_code, answer.headers["content-type"]) == (200, "image/jpeg")
+        assert answer.content == b"a picture"
+        assert bare.get(f"{path}/sound?token=guess").status_code == 404
+        sound = bare.get(f"{path}/sound?token={TOKEN}", headers={"Range": "bytes=0-99"})
+        assert (sound.status_code, sound.headers["content-type"]) == (206, "audio/wav")
+        assert sound.content == (kept / "audio.wav").read_bytes()[:100]  # played from anywhere
+        shutil.rmtree(kept)
+        assert api.client.get(path + "/sound").status_code == 404
 
     @pytest.mark.parametrize("track", ["signal-AF7", "protocol", "nothing"])
     def test_a_track_that_is_no_audio_has_no_sound(self, api, track):
@@ -365,7 +347,7 @@ class TestNewSession:
 
     def test_a_session_is_asked_for_once(self, api):
         request = {
-            "style_id": "folk",
+            "song_id": SONG,
             "source_id": "dataset:synthetic",
             "recording": "short",
             "name": "S02",
@@ -390,7 +372,7 @@ class TestNewSession:
         """As the app asks: a value it does not have it leaves out."""
         api.client.post("/api/new-session/refresh")  # the headset found
         request = {
-            "style_id": "folk",
+            "song_id": SONG,
             "source_id": "headset:Muse 2",
             "name": "live",
             "output": SPEAKERS,
@@ -400,7 +382,7 @@ class TestNewSession:
     def test_while_the_last_session_is_finished_a_new_one_waits_for_it(self, api):
         api.runner._set("finishing")  # its recording stored, its metrics computed
         request = {
-            "style_id": "folk",
+            "song_id": SONG,
             "source_id": "dataset:synthetic",
             "recording": "short",
             "name": "S02",
@@ -415,7 +397,7 @@ class TestNewSession:
 
     def test_a_request_that_cannot_run_says_why(self, api):
         request = {
-            "style_id": "folk",
+            "song_id": SONG,
             "source_id": "dataset:synthetic",
             "recording": "short",
             "name": "a/b",
@@ -434,7 +416,7 @@ class TestNewSession:
         api.client.post("/api/new-session/refresh")  # found
         api.runner._looking = True  # as while a look takes its seconds
         headset = {
-            "style_id": "folk",
+            "song_id": SONG,
             "source_id": "headset:Muse 2",
             "recording": None,
             "name": "S02",
@@ -447,7 +429,7 @@ class TestNewSession:
                 answer.json()["detail"] == "the headset is being looked for: try again in a moment"
             )
         recording = {
-            "style_id": "folk",
+            "song_id": SONG,
             "source_id": "dataset:synthetic",
             "recording": "short",
             "name": "S02",
@@ -458,7 +440,7 @@ class TestNewSession:
 
 def recording_request(output=SPEAKERS):
     return {
-        "style_id": "folk",
+        "song_id": SONG,
         "source_id": "dataset:synthetic",
         "recording": "short",
         "name": "S02",
@@ -491,11 +473,125 @@ class TestAudioOutput:
             422, f"{SPEAKERS} is not connected.",
         )  # fmt: skip
         assert api.client.get("/api/run").json()["run"] == 0
-        assert api.checked.generator.outputs == [SPEAKERS]  # not started again
 
-    def test_an_output_set_to_another_rate_says_how_to_set_it(self, api):
-        api.machine.outputs[0] = AudioOutput(TV, 44100.0)
-        answer = api.client.post("/api/run", json=recording_request(TV))
-        assert (answer.status_code, answer.json()["detail"]) == (
-            422, f"{TV} plays 44100 Hz. Set it to 48000 Hz in Audio MIDI Setup.",
+
+def listed(api, song_id):
+    """The song ``song_id`` as the library lists it."""
+    page = api.client.get("/api/songs", params={"offset": 0, "limit": 100}).json()
+    return next(song for song in page["songs"] if song["id"] == song_id)
+
+
+class TestSongs:
+    """The library: songs listed a page at a time, played, described and deleted; a song is
+    marked in a draft, of a file of this computer or of a song of the library."""
+
+    def test_the_library_lists_its_songs_a_page_at_a_time(self, api):
+        place_song(api.song.parent, "Another")
+        page = api.client.get("/api/songs", params={"offset": 1, "limit": 5}).json()
+        assert page["total"] == 2 and [song["id"] for song in page["songs"]] == [SONG]
+        (song,) = page["songs"]
+        assert [(p["mark"], p["title"], p["colour"]) for p in song["parts"]] == [
+            (c.REST, "Rest", "indigo"), (c.FOCUS, "Focus", "orange"),
+        ]  # fmt: skip
+        assert song["cover"] is not None and song["length_s"] == 20.0
+        marks = api.client.get("/api/marks").json()
+        assert [(m["id"], m["title"], m["colour"]) for m in marks["marks"]] == [
+            (c.REST, "Rest", "indigo"), (c.FOCUS, "Focus", "orange"),
+        ]  # fmt: skip
+        assert marks["unmarked"] == "Unmarked"
+
+    def test_a_song_goes_into_the_library_from_a_draft_of_its_file_once_marked(self, api, tmp_path):
+        made = api.client.post("/api/drafts", json={"path": str(write_song(tmp_path / "Beat.wav"))})
+        assert made.status_code == 200
+        draft = made.json()
+        assert (draft["title"], draft["parts"]) == ("Beat", [])
+        assert api.client.get(f"/api/drafts/{draft['id']}/sound").status_code == 200
+        mark = f"/api/drafts/{draft['id']}/marks"
+        marked = api.client.post(mark, json={"start_s": 1.25, "end_s": 5.0, "mark": c.REST})
+        assert [(p["start_s"], p["end_s"]) for p in marked.json()["parts"]] == [(1.25, 5.0)]
+        keep = f"/api/drafts/{draft['id']}/keep"
+        refused = api.client.post(keep, json={"title": "Beat"})
+        assert (refused.status_code, refused.json()["detail"]) == (
+            422, "No beat of the song is marked focus: mark a part so.",
         )  # fmt: skip
+        api.client.post(mark, json={"start_s": 5.0, "end_s": 20.0, "mark": c.FOCUS})
+        kept = api.client.post(keep, json={"title": "Beat", "artist": "Nobody"}).json()
+        assert (kept["id"], kept["artist"], len(kept["parts"])) == ("Beat", "Nobody", 2)
+        assert listed(api, "Beat") == kept
+        assert api.client.post(keep, json={"title": "Beat"}).status_code == 404  # it is gone
+
+    def test_a_song_changes_in_a_draft_of_it(self, api, tmp_path):
+        draft = api.client.post(f"/api/songs/{SONG}/draft").json()
+        mark = f"/api/drafts/{draft['id']}/marks"
+        # without a mark, as the app asks it, the stretch is unmarked
+        unmarked = api.client.post(mark, json={"start_s": 0.0, "end_s": 2.0})
+        assert unmarked.json()["parts"][0]["start_s"] == 2.0
+        before = listed(api, SONG)
+        assert before["parts"][0]["start_s"] == 0.0
+        picture = tmp_path / "front.jpg"
+        picture.write_bytes(b"a picture")
+        asked = {"title": "Tokyo", "artist": "", "picture": str(picture)}
+        kept = api.client.post(f"/api/drafts/{draft['id']}/keep", json=asked)
+        assert (kept.json()["title"], kept.json()["artist"]) == ("Tokyo", None)
+        assert listed(api, SONG)["parts"][0]["start_s"] == 2.0
+        assert listed(api, SONG)["cover"] not in (None, before["cover"])  # read anew by the app
+        cover = api.client.get(f"/api/songs/{SONG}/cover")
+        assert (cover.headers["content-type"], cover.content) == ("image/jpeg", b"a picture")
+
+    def test_a_discarded_draft_is_gone(self, api):
+        draft = api.client.post(f"/api/songs/{SONG}/draft").json()["id"]
+        assert api.client.delete(f"/api/drafts/{draft}").status_code == 204
+        assert api.client.delete(f"/api/drafts/{draft}").status_code == 404
+
+    def test_what_cannot_be_drafted_marked_or_kept_says_why(self, api, tmp_path):
+        text = tmp_path / "notes.mp3"
+        text.write_text("no song")
+        refused = api.client.post("/api/drafts", json={"path": str(text)})
+        assert (
+            refused.status_code == 422 and "not a song macOS can read" in refused.json()["detail"]
+        )
+        draft = api.client.post(f"/api/songs/{SONG}/draft").json()["id"]
+        wrong = api.client.post(f"/api/drafts/{draft}/marks",
+                                json={"start_s": 1.0, "end_s": 5.0, "mark": "calm"})  # fmt: skip
+        assert (wrong.status_code, wrong.json()["detail"]) == (
+            422, "calm: a part is marked rest or focus",
+        )  # fmt: skip
+        untitled = api.client.post(f"/api/drafts/{draft}/keep", json={"title": " "})
+        assert (untitled.status_code, untitled.json()["detail"]) == (422, "A song has a title.")
+
+    @pytest.mark.parametrize("path", ["Jazz/sound", "Jazz/cover", "..%2Fsessions/sound"])
+    def test_a_song_or_draft_that_is_not_there_is_not_found(self, api, path):
+        assert api.client.get(f"/api/songs/{path}").status_code == 404
+        assert api.client.get(f"/api/drafts/{path}").status_code == 404
+        assert api.client.delete("/api/songs/Jazz").status_code == 404
+        assert api.client.post("/api/songs/Jazz/draft").status_code == 404
+        for route in ("marks", "keep"):
+            asked = api.client.post(f"/api/drafts/Jazz/{route}",
+                                    json={"start_s": 1, "end_s": 2, "title": "A"})  # fmt: skip
+            assert asked.status_code == 404
+        # a song of the library is never marked where it is: only in a draft of it
+        assert api.client.post(f"/api/drafts/{SONG}/keep", json={"title": "A"}).status_code == 404
+
+    def test_a_song_plays_from_any_point_and_shows_its_picture_as_a_player_asks(self, api):
+        bare = TestClient(api.client.app)
+        sound = f"/api/songs/{SONG}/sound"
+        assert bare.get(sound).status_code == 404
+        part = bare.get(f"{sound}?token={TOKEN}", headers={"Range": "bytes=0-99"})
+        assert part.status_code == 206 and part.headers["content-type"] == "audio/wav"
+        assert part.content == (api.song / "audio.wav").read_bytes()[:100]
+        cover = bare.get(f"/api/songs/{SONG}/cover?token={TOKEN}")
+        assert (cover.status_code, cover.headers["content-type"]) == (200, "image/png")
+        assert cover.content == PICTURE.read_bytes()
+
+    def test_a_song_without_a_picture_has_none(self, api):
+        (api.song / "cover.png").unlink()
+        assert api.client.get(f"/api/songs/{SONG}/cover").status_code == 404
+        assert listed(api, SONG)["cover"] is None
+
+    def test_a_deleted_song_is_gone_from_the_library_and_no_session_plays_it(self, api):
+        assert api.client.delete(f"/api/songs/{SONG}").status_code == 204
+        page = api.client.get("/api/songs", params={"offset": 0, "limit": 5}).json()
+        assert page == {"total": 0, "songs": []}
+        assert not api.song.exists()
+        started = api.client.post("/api/run", json=recording_request(SPEAKERS))
+        assert started.status_code == 422 and SONG in started.json()["detail"]

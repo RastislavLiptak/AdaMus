@@ -4,9 +4,7 @@ import contextlib
 import json
 import logging
 import platform
-import shutil
 import subprocess
-from collections.abc import Callable
 from importlib import metadata
 from pathlib import Path
 from typing import Any, BinaryIO, TextIO, Unpack
@@ -18,21 +16,16 @@ from adamus import constants as c
 from adamus.config import write_yaml
 from adamus.session_format import (
     EventFields,
-    GeneratorMessage,
     Meta,
+    MusicDecision,
     SessionFacts,
     Tick,
     folder_name,
     log_time,
 )
 
-RECORDING_CLOSE_S = 2.0  # the longest wait for Pd to finish audio.wav after "rec stop"
-RECORDING_LOOK_S = 0.05  # between two looks at audio.wav meanwhile
-RIFF = b"RIFF"
-RIFF_HEADER = len(RIFF) + 4  # bytes: "RIFF", then the length of all that follows
-
 # The libraries whose release changes what a session computes or plays.
-VERSIONED = ("brainflow", "numpy", "scipy", "librosa", "magenta-rt")
+VERSIONED = ("brainflow", "numpy", "scipy", "librosa", "sounddevice")
 
 
 def _version_of(package: str) -> str | None:
@@ -52,22 +45,6 @@ def _commit() -> str | None:
     except OSError:
         return None
     return git.stdout.strip() if git.returncode == 0 else None
-
-
-def recording_finished(path: Path) -> bool:
-    """Has Pd closed the WAV file of the session? Then its header counts every byte that follows it.
-
-    No file means nothing to wait for.
-    """
-    try:
-        with path.open("rb") as wav:
-            header = wav.read(RIFF_HEADER)
-        size = path.stat().st_size
-    except FileNotFoundError:
-        return True
-    counted = header[len(RIFF) :]
-    whole = len(header) == RIFF_HEADER and header.startswith(RIFF)
-    return whole and int.from_bytes(counted, "little") == size - RIFF_HEADER
 
 
 class LogFormat(logging.Formatter):
@@ -91,15 +68,15 @@ class SessionRecorder:
 
     _ticks: TextIO
     _events: TextIO
-    _generator: TextIO
+    _music: TextIO
     _filtered: BinaryIO
 
     def __init__(self, sessions_root: Path, name: str, started: float) -> None:
         self.directory = Path(sessions_root) / folder_name(started, name)
         self.directory.mkdir(parents=True)
         self.raw_csv = self.directory / c.FILE_RAW  # written by the source (BrainFlow, player)
-        self.audio_wav = self.directory / c.FILE_AUDIO  # written by Pd
-        self.pd_log = self.directory / c.FILE_PD_LOG  # written by the generator's stderr thread
+        self.audio_wav = self.directory / c.FILE_AUDIO  # written by the music
+        self.song = self.directory / c.SONG_DIR  # the music's copy of its song
         self._open = contextlib.ExitStack()  # what close() closes, whatever was opened
 
     def open(self) -> None:
@@ -107,7 +84,7 @@ class SessionRecorder:
         opened = self._open.enter_context
         self._ticks = opened((self.directory / c.FILE_TICKS).open("w", encoding="utf-8"))
         self._events = opened((self.directory / c.FILE_EVENTS).open("w", encoding="utf-8"))
-        self._generator = opened((self.directory / c.FILE_GENERATOR).open("w", encoding="utf-8"))
+        self._music = opened((self.directory / c.FILE_MUSIC).open("w", encoding="utf-8"))
         self._filtered = opened((self.directory / c.FILE_FILTERED).open("wb"))
         handler = logging.FileHandler(self.directory / c.FILE_LOG, encoding="utf-8")
         handler.setFormatter(LogFormat())
@@ -120,11 +97,6 @@ class SessionRecorder:
 
     def write_config(self, raw_config: dict[str, Any]) -> None:
         write_yaml(raw_config, self.directory / c.FILE_CONFIG)
-
-    def keep_style(self, style_id: str) -> None:
-        """A copy of the sample and the cover of the style the session plays."""
-        for name in (c.FILE_SAMPLE, c.FILE_COVER):
-            shutil.copyfile(c.STYLE_FILES / style_id / name, self.directory / name)
 
     def write_model(self, raw_model: dict[str, Any]) -> None:
         """The focus model the session ran with, so that its steps can be computed again."""
@@ -147,11 +119,10 @@ class SessionRecorder:
         print(json.dumps({"t": t, "n": n, "type": kind, **fields}), file=self._events)
         self._events.flush()
 
-    def generator_message(self, t: float, n: int, message: str) -> None:
-        """One line of generator.jsonl: what the generator was sent at ``t``."""
-        line: GeneratorMessage = {"t": t, "n": n, "msg": message}
-        print(json.dumps(line, ensure_ascii=False), file=self._generator)
-        self._generator.flush()
+    def music_decision(self, line: MusicDecision) -> None:
+        """One line of music.jsonl: where the music went."""
+        print(json.dumps(line), file=self._music)
+        self._music.flush()
 
     def tick(self, row: Tick, filtered: np.ndarray) -> None:
         """Step k: line k of ticks.jsonl and record k of filtered.f32, both on disk at once."""
@@ -160,14 +131,6 @@ class SessionRecorder:
         with np.errstate(over="ignore"):  # a value too large for float32 is stored as inf
             record = np.ascontiguousarray(filtered, dtype=c.FILTERED_DTYPE)
         record.tofile(self._filtered)  # unbuffered
-
-    def wait_for_recording(self, sleep: Callable[[float], None]) -> bool:
-        """Wait until Pd has finished audio.wav, at most RECORDING_CLOSE_S; whether it did."""
-        for _ in range(round(RECORDING_CLOSE_S / RECORDING_LOOK_S)):
-            if recording_finished(self.audio_wav):
-                return True
-            sleep(RECORDING_LOOK_S)
-        return False
 
     def close(self) -> None:
         """Close what ``open`` opened; nothing when it was never called."""

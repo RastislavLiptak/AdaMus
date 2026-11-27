@@ -33,8 +33,12 @@ struct APIClient: Sendable, Equatable {
 
     // MARK: Sessions
 
-    func sessions(from offset: Int) async throws -> SessionPage {
-        try await decoded("api/sessions", query: ["offset": "\(offset)", "limit": "\(Self.pageSize)"])
+    /// Every session, a page at a time.
+    func sessions() async throws -> [SessionSummary] {
+        try await everyPage { offset in
+            let page: SessionPage = try await decoded("api/sessions", query: page(from: offset))
+            return (page.sessions, page.total)
+        }
     }
 
     func dashboard(of session: String) async throws -> Dashboard {
@@ -95,19 +99,9 @@ struct APIClient: Sendable, Equatable {
         try await decoded("api/new-session/refresh", method: "POST")
     }
 
-    /// Where a sample of a style of music is played from; a player cannot send a header, so the
-    /// token goes in the address.
-    func sampleURL(of style: String) -> URL {
-        url("api/styles/\(style)/sound", query: ["token": token])
-    }
-
-    /// The sample and the cover of the style a session played, its own copies; with the token
-    /// in their address, as a player and an image ask without a header.
-    func music(of session: String) -> (sample: URL, cover: URL) {
-        (
-            url("api/sessions/\(session)/music/sound", query: ["token": token]),
-            url("api/sessions/\(session)/music/cover", query: ["token": token])
-        )
+    /// Where the song a session kept is played from, and its picture, if it carries one.
+    func song(ofSession session: String, _ song: Song) -> (sound: URL, cover: URL?) {
+        files(of: "api/sessions/\(session)/song", song)
     }
 
     func check(source: String, recording: String?) async throws -> SourceCheck {
@@ -131,7 +125,86 @@ struct APIClient: Sendable, Equatable {
         _ = try await body("api/run/stop", method: "POST")
     }
 
+    // MARK: The library of songs
+
+    /// Every song, a page at a time.
+    func songs() async throws -> [Song] {
+        try await everyPage { offset in
+            let page: SongPage = try await decoded("api/songs", query: page(from: offset))
+            return (page.songs, page.total)
+        }
+    }
+
+    func songMarks() async throws -> SongMarks {
+        try await decoded("api/marks")
+    }
+
+    func deleteSong(_ song: Song.ID) async throws {
+        _ = try await body("api/songs/\(song)", method: "DELETE")
+    }
+
+    /// Where a song is played from and its picture, if it carries one.
+    func song(_ song: Song) -> (sound: URL, cover: URL?) {
+        files(of: "api/songs/\(song.id)", song)
+    }
+
+    // MARK: Drafts, where a song is changed
+
+    /// A draft of the song file at ``path``, which the program analyses: seconds.
+    func draft(ofFile path: String) async throws -> Song {
+        try await decoded("api/drafts", method: "POST", sending: try Self.encoder.encode(DraftOfFile(path: path)))
+    }
+
+    func draft(of song: Song.ID) async throws -> Song {
+        try await decoded("api/songs/\(song)/draft", method: "POST")
+    }
+
+    func mark(_ draft: Song.ID, _ marked: SongMark) async throws -> Song {
+        try await decoded("api/drafts/\(draft)/marks", method: "POST", sending: try Self.encoder.encode(marked))
+    }
+
+    /// Put the draft into the library: a new song, or in place of the song it is a draft of.
+    func keep(_ draft: Song.ID, as kept: DraftKept) async throws -> Song {
+        try await decoded("api/drafts/\(draft)/keep", method: "POST", sending: try Self.encoder.encode(kept))
+    }
+
+    func discard(_ draft: Song.ID) async throws {
+        _ = try await body("api/drafts/\(draft)", method: "DELETE")
+    }
+
+    func draftFiles(_ draft: Song) -> (sound: URL, cover: URL?) {
+        files(of: "api/drafts/\(draft.id)", draft)
+    }
+
     // MARK: -
+
+    /// With the token in their address, as a player and an image ask without a header; the
+    /// picture with its version too, so that one changed is read anew, not kept as it was.
+    private func files(of path: String, _ song: Song) -> (sound: URL, cover: URL?) {
+        let cover = song.cover.map { url("\(path)/cover", query: ["token": token, "version": $0]) }
+        return (url("\(path)/sound", query: ["token": token]), cover)
+    }
+
+    private func page(from offset: Int) -> [String: String] {
+        ["offset": "\(offset)", "limit": "\(Self.pageSize)"]
+    }
+
+    /// Every item of a list read a page at a time: items may come or go meanwhile, and pages
+    /// move, so an item read already is not listed again, and a page with nothing new ends it.
+    private func everyPage<Item: Identifiable>(
+        _ read: (Int) async throws -> (items: [Item], total: Int)
+    ) async throws -> [Item] {
+        var page = try await read(0)
+        var listed = page.items
+        while listed.count < page.total {
+            page = try await read(listed.count)
+            let known = Set(listed.map(\.id))
+            let new = page.items.filter { !known.contains($0.id) }
+            if new.isEmpty { break }
+            listed += new
+        }
+        return listed
+    }
 
     private func decoded<T: Decodable>(
         _ path: String, query: [String: String] = [:], method: String = "GET", sending: Data? = nil

@@ -1,16 +1,17 @@
 // The overview of a session: what it is first, when, how long and on what it ran and how it
 // ended, the result marked as it went; what bears on how its results are read; then its main
 // results, as large as they matter (HIG "Charting data": the macro level first, the details on
-// a page of their own); then its music, and the electrodes on the head. Lazy: only what is in view is laid out, as a sliding sidebar makes its
-// text wrap again in every frame.
+// a page of their own); then the source of its music, and the electrodes on the head. Lazy:
+// only what is in view is laid out, as a sliding sidebar makes its text wrap again in every
+// frame.
 import SwiftUI
 
 struct OverviewView: View {
     let dashboard: Dashboard
     let electrodes: ElectrodeSet?
-    /// Where the sample and the cover of the session's music are.
-    let music: (sample: URL, cover: URL)
-    let player: SamplePlayer
+    /// Where the song the session kept is played from, and its picture.
+    let songFiles: (Song) -> (sound: URL, cover: URL?)
+    let player: SoundPlayer
 
     var body: some View {
         ScrollView {
@@ -26,8 +27,9 @@ struct OverviewView: View {
                     Notice.caution(caution)
                 }
                 Results(highlights: dashboard.highlights)
-                if let found = dashboard.music {
-                    MusicBox(music: found, sample: music.sample, cover: music.cover, player: player)
+                if let song = dashboard.song {
+                    let (sound, cover) = songFiles(song)
+                    MusicSourceBox(song: song, sound: sound, cover: cover, player: player)
                 }
                 if let electrodes, !electrodes.placed.isEmpty {
                     ElectrodesBox(set: electrodes)

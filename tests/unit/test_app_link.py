@@ -36,18 +36,15 @@ def test_the_checklist_is_one_line_and_a_failed_check_says_how_to_fix_it():
     output = io.StringIO()
     AppMessages(output).checks([
         Check(checks.CONFIGURATION, checks.PASSED, "config.yaml"),
-        Check(checks.AUDIO_OUTPUT, checks.FAILED, "44100 Hz"),
-        Check(checks.GENERATOR_START, checks.SKIPPED, checks.SKIPPED),
         Check(checks.STORAGE, checks.FAILED, "read-only"),
+        Check(checks.FOCUS_DETECTOR, checks.SKIPPED, checks.SKIPPED),
     ])  # fmt: skip
     (line,) = output.getvalue().splitlines()
     assert json.loads(line) == {"checks": [
         {"name": checks.CONFIGURATION, "status": "passed", "detail": "config.yaml", "fix": None},
-        {"name": checks.AUDIO_OUTPUT, "status": "failed", "detail": "44100 Hz",
-         "fix": checks.HOW_TO_FIX[checks.AUDIO_OUTPUT]},
-        {"name": checks.GENERATOR_START, "status": "skipped", "detail": "skipped", "fix": None},
         {"name": checks.STORAGE, "status": "failed", "detail": "read-only",
          "fix": checks.HOW_TO_FIX[checks.STORAGE]},
+        {"name": checks.FOCUS_DETECTOR, "status": "skipped", "detail": "skipped", "fix": None},
     ]}  # fmt: skip
 
 

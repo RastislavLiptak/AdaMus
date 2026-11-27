@@ -1,7 +1,9 @@
 // A new session, in a sheet over the window (HIG "Sheets"): the form, in the order the session
-// needs it (the source with its recording, the audio output, the style of its music, the name),
-// then the session as it runs, with a button that stops it.
-// Once it has ended and been analysed, the sheet closes on its overview.
+// needs it (the source with its recording, the audio output, the source of its music, the name),
+// then the session as it runs, with a button that stops it. The music source, a song, is chosen
+// in the window of the song library, which Choose… opens beside the sheet (HIG "Sheets": other
+// windows of the app can be used while one is open). Once the session has ended and been
+// analysed, the sheet closes on its overview.
 import SwiftUI
 
 struct NewSessionSheet: View {
@@ -11,11 +13,14 @@ struct NewSessionSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var model: NewSessionModel
     @State private var run: RunModel?
+    @Environment(\.openWindow) private var openWindow
 
-    init(api: APIClient, ended: @escaping (String) -> Void, failed: @escaping () -> Void) {
+    init(
+        api: APIClient, library: LibraryModel, ended: @escaping (String) -> Void, failed: @escaping () -> Void
+    ) {
         self.ended = ended
         self.failed = failed
-        _model = State(initialValue: NewSessionModel(api: api))
+        _model = State(initialValue: NewSessionModel(api: api, library: library))
     }
 
     var body: some View {
@@ -27,12 +32,18 @@ struct NewSessionSheet: View {
                         if !Task.isCancelled { finish(run) }  // not when the window has gone
                     }
             } else {
-                SessionFormView(model: model) { started in run = RunModel(api: model.api, state: started) }
+                SessionFormView(model: model) {
+                    model.askLibraryForSong()
+                    openWindow(id: LibraryWindow.id)
+                } started: { started in
+                    run = RunModel(api: model.api, state: started)
+                }
             }
         }
         .frame(width: Metrics.sheetWidth)
         .interactiveDismissDisabled(run != nil)
         .task { await model.open() }
+        .onDisappear { model.library.choose = nil }  // the library chooses for this form no more
         .alert(
             model.runEnded ? "The Session Did Not Finish" : "The Session Could Not Start",
             isPresented: Binding(get: { model.problem != nil }, set: { if !$0 { model.dismissProblem() } })
@@ -58,6 +69,8 @@ struct NewSessionSheet: View {
 
 struct SessionFormView: View {
     @Bindable var model: NewSessionModel
+    /// Opens the song library, where the music source is chosen.
+    let chooseSong: () -> Void
     let started: (RunState) -> Void
 
     var body: some View {
@@ -73,7 +86,7 @@ struct SessionFormView: View {
                     .accessibilityLabel("Recording")  // as the name below
                 }
                 outputPicker
-                musicPicker
+                musicSourcePicker
                 TextField("Name", text: $model.name, prompt: Text("Required"))
                     .accessibilityLabel("Name")  // the form shows its title beside it, unread
                 if let hint = model.nameProblem {
@@ -95,7 +108,6 @@ struct SessionFormView: View {
         .navigationTitle("New Session")
         // what the program says of the choice; a later choice cancels the look at an earlier one
         .task(id: [model.source?.id, model.recording]) { await model.checkChoice() }
-        .onDisappear { model.stopSample() }
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel", role: .cancel) { dismiss() }
@@ -130,21 +142,19 @@ struct SessionFormView: View {
         }
     }
 
-    /// The style of the music, and beside it a button that plays a sample of the one chosen or
-    /// stops it, as the buttons that look again stand beside the source and the output.
-    private var musicPicker: some View {
-        LabeledContent("Music") {
+    /// The song the music is made of, and the button that opens the song library, where it is
+    /// chosen. A long title is cut short at its end: it never pushes the row onto two lines.
+    private var musicSourcePicker: some View {
+        LabeledContent("Music Source") {
             HStack {
-                Picker("Music", selection: Binding(get: { model.style?.id }, set: { model.choose(style: $0) })) {
-                    ForEach(model.form?.styles ?? []) { Text($0.title).tag(Optional($0.id)) }
+                if let song = model.song {
+                    let called = "\(song.title) – \(song.artist ?? unknownArtist)"
+                    Text(called)
+                        .lineLimit(1)
+                        .frame(maxWidth: Metrics.songInForm, alignment: .trailing)
+                        .help(called)
                 }
-                .labelsHidden()
-                let playing = model.playingSample
-                Button(playing ? "Stop Sample" : "Play Sample", systemImage: playing ? "stop.fill" : "play.fill") {
-                    model.playOrStopSample()
-                }
-                .labelStyle(.iconOnly)
-                .help(playing ? "Stop the sample" : "Play a sample of the music chosen")
+                Button("Choose…", action: chooseSong)
             }
         }
     }

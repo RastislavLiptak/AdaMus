@@ -244,8 +244,8 @@ class TestComputeMetrics:
         assert list(stored) == [
             "session", "sampling_rate_hz", "longest_sample_gap_s", "valid_steps_per_block",
             "processing_time_s", "state_separation_auc", "mean_f_difference", "response_time_s",
-            "control_latency_s", "step_interval_s", "audio_dropouts",
-            "recording_length_error_s", "music_response", "total_response_s",
+            "control_latency_s", "step_interval_s", "audio_dropouts", "music_response",
+            "total_response_s",
             "record_completeness",
         ]  # fmt: skip
         assert stored["session"] == "20261110-150412_X"

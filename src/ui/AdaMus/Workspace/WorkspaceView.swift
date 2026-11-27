@@ -7,13 +7,18 @@ import SwiftUI
 struct WorkspaceView: View {
     @State private var workspace: Workspace
 
-    init(api: APIClient) {
+    /// The songs a new session chooses its music from.
+    private let library: LibraryModel
+
+    init(api: APIClient, library: LibraryModel) {
         _workspace = State(initialValue: Workspace(api: api))
+        self.library = library
     }
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: .constant(.all)) {  // the sidebar is never hidden
             SessionList(workspace: workspace)
+                .toolbar(removing: .sidebarToggle)
                 .navigationSplitViewColumnWidth(
                     min: Metrics.sidebar.min, ideal: Metrics.sidebar.ideal, max: Metrics.sidebar.max)
         } detail: {
@@ -50,8 +55,11 @@ struct WorkspaceView: View {
                 .navigationTitle("Sessions")
             }
         }
+        // a toolbar with nothing in it is none, and the window lower without it: as high whether
+        // anything is chosen or not
+        .toolbar { ToolbarSpacer(.flexible) }
         .sheet(isPresented: $workspace.isMakingSession) {
-            NewSessionSheet(api: workspace.api) { id in
+            NewSessionSheet(api: workspace.api, library: library) { id in
                 Task { await workspace.sessionEnded(id) }
             } failed: {
                 Task { await workspace.load() }

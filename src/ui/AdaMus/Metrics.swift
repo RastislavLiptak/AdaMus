@@ -20,22 +20,37 @@ enum Metrics {
     static let sidebar = (min: CGFloat(180), ideal: CGFloat(240), max: CGFloat(360))
     static let inspector = (min: CGFloat(300), ideal: CGFloat(440), max: CGFloat(640))
     static let sheetWidth: CGFloat = 480
+    static let songInForm: CGFloat = 220  // the widest the song of a new session goes, beside its title
+    static let library = CGSize(width: 960, height: 600)  // the window, when it first opens
+    static let songEditor: CGFloat = 560
     static let markedPartSheet = CGSize(width: 640, height: 560)
     static let checklistWidth: CGFloat = 560
     static let lastWords = CGSize(width: 640, height: 240)  // what a program that ended printed
     static let cornerRadius: CGFloat = 8  // of a box of text
 
-    /// The music of a session on its overview: its cover and the sound track of its sample.
-    enum Sample {
+    /// A song or the music of a session: its cover and its sound track.
+    enum Sound {
         static let cover: CGFloat = 140
         static let coverShadow: CGFloat = 6
         static let playButton: CGFloat = 56  // round, on the middle of the cover
         static let track: CGFloat = 44
-        static let barShare: CGFloat = 0.6  // of the room of a slice of the sample, its bar's width
+        static let bar: CGFloat = 3  // the width of a bar of the track, whatever its width
+        static let barGap: CGFloat = 2
+        static let grab: CGFloat = 12  // beside the track, where a drag along it may begin
+        static let hitRegion: CGFloat = 28  // the least height of a button of the menu over a stretch
         static let leastBar: CGFloat = 0.08  // a silent slice still shows, this high of the track
         static let unplayed = 0.38  // how strongly what is still to play shows
         static let playhead: CGFloat = 2.5
         static let step = 1.0  // s, the track moved by VoiceOver
+        static let coverRounding: CGFloat = 0.06  // of the side of a cover, its corners
+        static let noteShare: CGFloat = 0.4  // of the side of a cover without a picture, its note
+        static let thumbnail: CGFloat = 40  // a cover in a list
+        static let magnet: CGFloat = 8  // a drag's end this near the edge of a part clings to it
+        static let markingTrack: CGFloat = 96  // the track where the parts are marked
+        static let zoomStep = 2.0
+        static let mostZoom = 64.0
+        static let selected = 0.35  // how strongly a stretch selected shows over the track
+        static let leastDrag: CGFloat = 3  // a press moved less selects nothing: a click
     }
 
     static let summaryColumn: CGFloat = 180  // the narrowest a fact of the overview goes

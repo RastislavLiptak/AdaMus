@@ -1,10 +1,9 @@
-"""The audio outputs of the Mac as macOS knows them at the moment: their names and rates, and
-the one the system plays on. Read from Core Audio at each call, so that headphones plugged in
+"""The audio outputs of the Mac as macOS knows them at the moment, by name, and the one the
+system plays on. Read from Core Audio at each call, so that headphones plugged in
 meanwhile are there."""
 
 import ctypes
-from ctypes import POINTER, byref, c_double, c_uint32, c_void_p, sizeof
-from dataclasses import dataclass
+from ctypes import POINTER, byref, c_uint32, c_void_p, sizeof
 from functools import cache
 from typing import Any
 
@@ -19,15 +18,9 @@ NAME_BYTES = 1024
 FINE = 0  # what Core Audio answers when it could do what it was asked
 # The properties asked for, and where they are looked at: the four letters Core Audio names them by.
 DEFAULT_OUTPUT, DEVICES = "dOut", "dev#"
-NAME, RATE, STREAMS = "lnam", "nsrt", "stm#"
+NAME, STREAMS = "lnam", "stm#"
 EVERYWHERE, OUTPUT = "glob", "outp"
 FIRST_ELEMENT = 0
-
-
-@dataclass(frozen=True)
-class AudioOutput:
-    name: str
-    rate: float  # samples a second, as the device is set to
 
 
 class Address(ctypes.Structure):
@@ -80,21 +73,15 @@ def name_of(device: int) -> str:
     return buffer.value.decode() if copied else ""
 
 
-def output_of(device: int) -> AudioOutput:
-    rate = c_double()
-    ask(device, RATE, byref(rate), sizeof(rate))
-    return AudioOutput(name_of(device), rate.value)
-
-
-def outputs() -> list[AudioOutput]:
+def outputs() -> list[str]:
     """Every device that plays sound, in the order macOS lists them."""
     devices = (c_uint32 * (size_of(SYSTEM, DEVICES, EVERYWHERE) // sizeof(c_uint32)))()
     ask(SYSTEM, DEVICES, devices, sizeof(devices))
-    return [output_of(device) for device in devices if size_of(device, STREAMS, OUTPUT)]
+    return [name_of(device) for device in devices if size_of(device, STREAMS, OUTPUT)]
 
 
-def system_output() -> AudioOutput | None:
+def system_output() -> str | None:
     """The output the system plays on, as chosen in the sound settings; None when it has none."""
     device = c_uint32()
     ask(SYSTEM, DEFAULT_OUTPUT, byref(device), sizeof(device))
-    return None if device.value == NO_DEVICE else output_of(device.value)
+    return None if device.value == NO_DEVICE else name_of(device.value)

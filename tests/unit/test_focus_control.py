@@ -1,4 +1,4 @@
-"""focus_control: from the detector's scores to f and the generator weights; holding."""
+"""focus_control: from the detector's scores to f and whether it is focus; holding."""
 
 import math
 
@@ -8,6 +8,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from adamus.config import Block
+from adamus.constants import FOCUS_THRESHOLD
 from adamus.detection.focus_control import CHANGE_CHANCE, Controller, focus_of, next_level
 from adamus.detection.signal_processing import StepSignal
 from adamus.protocol import block_spans
@@ -106,14 +107,14 @@ class TestHiddenMarkovModel:
 class TestFirstStep:
     def test_nothing_is_controlled_before_the_first_clean_step(self):
         steps, detector = run([False, False])
-        assert all(s.f is None and not s.f_held and s.w_focus == 0.0 for s in steps)
-        assert (steps[0].w_idle, steps[0].score) == (1.0, None)
+        assert all(s.f is None and not s.f_held and s.focused is None for s in steps)
+        assert steps[0].score is None
         assert detector.taken == []
 
     def test_the_first_clean_step_controls_at_once(self):
         steps, _ = run([True], scores=[2.0])
         assert steps[0].f == pytest.approx(focus_of(2.0))
-        assert steps[0].w_focus == steps[0].f
+        assert steps[0].focused is True
 
 
 class TestControl:
@@ -126,7 +127,9 @@ class TestControl:
             assert step.f == pytest.approx(focus_of(level))
             assert step.score == score
         assert all(s.f is not None for s in steps)
-        assert all(s.w_focus == s.f and s.w_idle == pytest.approx(1 - (s.f or 0)) for s in steps)
+        assert [s.focused for s in steps] == [(s.f or 0) >= FOCUS_THRESHOLD for s in steps]
+        changed, _ = run([True, True], scores=[-2.0, 4.0])
+        assert [s.focused for s in changed] == [False, True]
 
     def test_an_invalid_step_keeps_the_last_f_and_tells_the_detector_nothing(self):
         steps, detector = run([True, False, False, True], scores=[2.0, -2.0])

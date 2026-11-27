@@ -1,14 +1,13 @@
-"""One session: the main loop that turns EEG samples into generator weights.
+"""One session: the main loop that turns EEG samples into the state the music follows.
 
 The loop is driven by the number of samples received, not by the clock. Step k
 ends where signal_processing.Steps puts it (one hop after step k - 1), so a
 recording that is played back gives the same steps with the same results every time.
-Only the chords under the music go by the clock, as music keeps its time: the loop wakes
-for each of them too.
+The music follows the detector: a song of the library, its parts marked focus played while
+the chance of focus is at the threshold or over it, its parts marked rest otherwise.
 """
 
 import logging
-import math
 import signal
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -24,24 +23,24 @@ from adamus.detection.focus_detector import Detector, load_models
 from adamus.detection.signal_processing import Steps, design_filters, process
 from adamus.errors import AdamusError
 from adamus.protocol import block_spans
-from adamus.realtime import generator_messages
-from adamus.realtime.chords import ChordLoop
 from adamus.realtime.clock import Clock, TimeSource
 from adamus.realtime.eeg_source import HeadsetSource, RecordingSource
 from adamus.realtime.recent_samples import RecentSamples
 from adamus.realtime.session_recorder import SessionRecorder
+from adamus.realtime.song_sequencer import Decision
 from adamus.session_format import (
     EVENT_BLOCK_START,
     EVENT_ERROR,
-    EVENT_FUDI,
+    EVENT_MUSIC_END,
+    EVENT_MUSIC_START,
     EVENT_SESSION_END,
     EVENT_SESSION_START,
     EVENT_STREAM_START,
     REASON_END_OF_STREAM,
     REASON_ERROR,
     REASON_USER,
-    STAGE_GENERATOR,
     STAGE_LOOP,
+    STAGE_MUSIC,
     STAGE_RECORD,
     STAGE_SOURCE,
     STAGE_STREAM,
@@ -52,7 +51,6 @@ from adamus.session_format import (
 
 log = logging.getLogger(__name__)
 STEP_LOG = "step %d: valid=%s score=%s f=%s"  # what a step leaves in adamus.log
-OUTPUT_LOST = "The audio output {output} was disconnected, so the music could not be heard."
 
 
 class EegSource(Protocol):
@@ -87,21 +85,26 @@ class EegSource(Protocol):
     def close(self) -> None: ...
 
 
-class MusicOutput(Protocol):
-    """Where the weights of the music go: the generator."""
+class Music(Protocol):
+    """What plays the music: a song of the library on the output chosen for the session."""
 
     @property
-    def pd_version(self) -> str | None: ...
+    def output(self) -> str: ...
+
+    # Copies the song into the new folder ``song``, and plays the copy: at rest at first; the
+    # time of day it began.
+    def start(self, recording: Path, song: Path) -> float: ...
+
+    def want(self, mark: str) -> None: ...
+
+    def decisions(self) -> list[Decision]: ...  # where the music went since the last call
+
+    def problem(self) -> str | None: ...  # why the music is not heard, if it is not
 
     @property
-    def output(self) -> str | None: ...  # the audio output it plays on
+    def dropouts(self) -> int: ...  # blocks the output played before they were ready
 
-    @property
-    def output_lost(self) -> bool: ...  # that output has gone from the Mac
-
-    def send(self, message: str) -> None: ...
-
-    def copy_output_to(self, session_log: Path | None) -> None: ...
+    def stop(self) -> None: ...
 
 
 class StopRequest(Protocol):
@@ -115,7 +118,7 @@ class Devices:
     """Everything a session talks to. Tests replace these by stand-ins."""
 
     source: EegSource
-    generator: MusicOutput
+    music: Music
     stop: StopRequest
     clock: TimeSource
 
@@ -130,16 +133,13 @@ class SessionResult:
 
 class Session:
     """One pass through the protocol over one data source, recorded in one folder, with the
-    music of the style of its configuration (Config.style)."""
+    music of the song its devices play."""
 
     def __init__(self, config: Config, name: str, devices: Devices, sessions_root: Path) -> None:
         root = Path(sessions_root).resolve()
         fs = devices.source.fs
         self._config = config
-        self._style = config.style
-        self._chords: ChordLoop | None = None  # once the music plays
-        self._focused = False  # the music in its full form (drums, power chords), see _form
-        self._form_changed_at = -math.inf  # on the monotonic clock
+        self._music_began: float | None = None  # the time of day the music began, once it has
         self._devices = devices
         self._fs = fs
         self._steps = Steps.at(fs)
@@ -196,7 +196,7 @@ class Session:
     def _run_until_recorded(self) -> str:
         """Start, loop and finish; return the reason of the end.
 
-        Whatever fails, the session still puts the generator to sleep, stops
+        Whatever fails, the session still stops the music, stops
         the stream and ends its record with SESSION_END.
         """
         self._event(EVENT_SESSION_START)
@@ -207,7 +207,7 @@ class Session:
         except Exception as problem:  # noqa: BLE001 - any failure must end the session cleanly
             self._record_error(problem)
         finishing = (
-            (STAGE_GENERATOR, self._put_generator_to_sleep),
+            (STAGE_MUSIC, self._stop_music),
             (STAGE_SOURCE, self._stop_stream),
             (STAGE_LOOP, self._record_last_samples),
         )
@@ -220,40 +220,43 @@ class Session:
         return REASON_ERROR if self._failed else reason
 
     def _start(self) -> None:
-        """Write what the session runs on, start the stream, then wake the generator up: the
-        music starts once everything else is ready, as opening a headset can take a while."""
+        """Write what the session runs on, start the stream, then the music: it starts once
+        everything else is ready, as opening a headset can take a while. It starts at rest, and
+        the song it plays is kept as it was then."""
         devices, recorder, source = self._devices, self._recorder, self._devices.source
         recorder.write_config(self._config.raw)
-        recorder.keep_style(self._style.id)
         recorder.write_model(self._models.raw)
         recorder.write_meta(self._meta())
         self._stage = STAGE_SOURCE
         source.start(recorder.raw_csv)
         self._streaming = True
         self._event(EVENT_STREAM_START, board_id=source.board_id, fs=self._fs)
-        self._stage = STAGE_GENERATOR
-        devices.generator.copy_output_to(recorder.pd_log)
-        self._chords = ChordLoop(self._style, devices.clock.monotonic())
-        self._send(
-            generator_messages.session_start_messages(
-                self._config.generator, self._style, recorder.audio_wav
-            )
-        )
-        self._play_chords()
+        self._stage = STAGE_MUSIC
+        self._music_began = devices.music.start(recorder.audio_wav, recorder.song)
+        self._recorder.event(EVENT_MUSIC_START, self._music_began, self._received)
+        self._record_music()
         self._stage = STAGE_LOOP
 
-    def _put_generator_to_sleep(self) -> None:
-        """Silence the generator and end its recording, if it was woken up. What Pd prints until
-        audio.wav is closed still belongs to this session."""
-        if self._chords is None:  # the stream did not start: the music never did
-            return
+    def _stop_music(self) -> None:
+        """End the music and its recording, and note where it went last and how often it
+        dropped out; whatever of it began."""
         try:
-            self._tell(self._chords.release())
-            self._send(generator_messages.session_end_messages())
-            if not self._recorder.wait_for_recording(self._devices.clock.sleep):
-                log.warning("Pd did not finish %s in time", self._recorder.audio_wav.name)
+            self._devices.music.stop()
         finally:
-            self._devices.generator.copy_output_to(None)
+            self._record_music()
+        if self._music_began is not None:
+            self._event(EVENT_MUSIC_END, dropouts=self._devices.music.dropouts)
+
+    def _record_music(self) -> None:
+        """Where the music went since the last look, into music.jsonl."""
+        if self._music_began is None:
+            return
+        for decision in self._devices.music.decisions():
+            self._recorder.music_decision({
+                "t": self._music_began + decision.out_s, "n": self._received,
+                "kind": decision.kind, "mark": decision.mark, "from_s": decision.from_s,
+                "to_s": decision.to_s,
+            })  # fmt: skip
 
     def _stop_stream(self) -> None:
         if self._streaming:
@@ -269,8 +272,7 @@ class Session:
         source = self._devices.source
         playback = None if source.playback_file is None else str(source.playback_file)
         return {
-            "pd": self._devices.generator.pd_version,
-            "audio_output": self._devices.generator.output,
+            "audio_output": self._devices.music.output,
             "board_id": source.board_id,
             "fs": self._fs,
             "electrode_rows": source.electrode_rows,
@@ -290,13 +292,14 @@ class Session:
         while True:  # until the operator, the stream or a failure ends the session
             if self._stop_signalled or devices.stop.is_set():
                 return REASON_USER
-            if devices.generator.output_lost:  # the music is heard nowhere: no use going on
-                self._stage = STAGE_GENERATOR
-                raise AdamusError(OUTPUT_LOST.format(output=devices.generator.output))
-            devices.clock.sleep(min(config.poll_s, self._time_to_chords()))
+            problem = devices.music.problem()
+            if problem is not None:  # the music is heard nowhere: no use going on
+                self._stage = STAGE_MUSIC
+                raise AdamusError(problem)
+            devices.clock.sleep(config.poll_s)
             before = self._received
             self._receive_and_process(sending=True)
-            self._play_chords()
+            self._record_music()
             if self._received > before:
                 last_sample_at = devices.clock.monotonic()
             elif devices.clock.monotonic() - last_sample_at >= config.timeouts.stream_s:
@@ -348,7 +351,8 @@ class Session:
             self._event(EVENT_BLOCK_START, index=span.index, label=span.label, marker=marker)
 
     def _step(self, k: int, sending: bool) -> None:
-        """Step k: process the window, update the control, send the weights, write the tick."""
+        """Step k: process the window, update the control, tell the music the state, write the
+        tick."""
         clock = self._devices.clock
         n_end = self._steps.end(k)
         samples = self._samples.window(n_end, self._steps.context)
@@ -365,7 +369,7 @@ class Session:
             "t_eeg": float(timestamps[-1]),
             "t_proc_start": t_proc_start,
             "t_proc_end": t_proc_end,
-            "t_sent": None,  # until the weights have been sent
+            "t_sent": None,  # until the music has been told the state
             "block_index": control.block.index,
             "block_label": control.block.label,
             "full_window": control.full_window,
@@ -374,19 +378,14 @@ class Session:
             "score": control.score,
             "f": control.f,
             "f_held": control.f_held,
-            "w_idle": control.w_idle,
-            "w_focus": control.w_focus,
+            "told": None,
         }
         try:
-            if sending and processed.valid and control.f is not None:
-                focused = self._form(control.w_focus)
-                self._tell(
-                    generator_messages.step_messages(
-                        self._style, control.w_idle, control.w_focus, focused
-                    )
-                )
-                row["t_sent"] = clock.now()
-        finally:  # a step whose weights could not be sent is recorded all the same
+            if sending and processed.valid and control.focused is not None:
+                told = c.FOCUS if control.focused else c.REST
+                self._devices.music.want(told)
+                row["t_sent"], row["told"] = clock.now(), told
+        finally:  # a step whose state could not be told is recorded all the same
             self._recorder.tick(row, processed.filtered)
         log.debug(STEP_LOG, k, processed.valid, control.score, control.f)
 
@@ -394,40 +393,6 @@ class Session:
 
     def _event(self, kind: str, **fields: Unpack[EventFields]) -> None:
         self._recorder.event(kind, self._devices.clock.now(), self._received, **fields)
-
-    def _send(self, messages: list[str]) -> None:
-        """Send the messages that begin and end the session's music, one by one, each also a
-        FUDI event of the session."""
-        for message in messages:
-            self._tell([message])
-            self._event(EVENT_FUDI, msg=message)
-
-    def _tell(self, messages: list[str]) -> None:
-        """Send ``messages`` to the generator at once, and write them into generator.jsonl."""
-        if not messages:
-            return
-        message = " ".join(messages)
-        self._devices.generator.send(message)
-        self._recorder.generator_message(self._devices.clock.now(), self._received, message)
-
-    def _form(self, w_focus: float) -> bool:
-        """Whether the music plays in its full form, with the drums and the power chords a style
-        may have there: from focus on, at once, but changing form at most once a bar, so that a
-        focus that wavers about the threshold does not switch them on and off."""
-        wanted = w_focus >= c.FOCUS_THRESHOLD
-        now = self._devices.clock.monotonic()
-        if wanted != self._focused and now - self._form_changed_at >= self._style.bar_s:
-            self._focused, self._form_changed_at = wanted, now
-        return self._focused
-
-    def _time_to_chords(self) -> float:
-        """How long until the chords have something to tell the generator."""
-        assert self._chords is not None, "the music plays"
-        return self._chords.wait(self._devices.clock.monotonic())
-
-    def _play_chords(self) -> None:
-        assert self._chords is not None, "the music plays"
-        self._tell(self._chords.due(self._devices.clock.monotonic(), self._focused))
 
     def _record_error(self, problem: Exception) -> None:
         """Log the failure and note it in the record; of several failures, the first one counts."""
@@ -440,12 +405,12 @@ class Session:
         self._problem = message
         try:
             self._event(EVENT_ERROR, where=self._stage, message=message)
-        except OSError:  # a full disk: the session must still be finished, the generator quiet
+        except OSError:  # a full disk: the session must still be finished, the music stopped
             log.exception("the failure could not be recorded")
 
 
 def real_devices(
-    config: Config, recording: Path | None, generator: MusicOutput, stop: StopRequest
+    config: Config, recording: Path | None, music: Music, stop: StopRequest
 ) -> Devices:
     """The devices of a real session: the headset, or ``recording`` played back in its place."""
     clock = Clock()
@@ -454,7 +419,7 @@ def real_devices(
         source = HeadsetSource(config.board)
     else:
         source = RecordingSource(config.board, recording.resolve(), clock)
-    return Devices(source, generator, stop, clock)
+    return Devices(source, music, stop, clock)
 
 
 def run_session(

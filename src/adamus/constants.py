@@ -53,30 +53,13 @@ FOCUS_MODEL_FILE = "focus_model.json"  # in FOCUS_DETECTOR_DIR, and copied into 
 MODELS_DIR = Path("models")
 FOCUS_DETECTOR_DIR = MODELS_DIR / "focus_detector"  # the model and the data it was trained on
 FOCUS_MODEL_PATH = FOCUS_DETECTOR_DIR / FOCUS_MODEL_FILE  # relative to the folder it runs in
-SETUP_LOG = "setup.log"  # in the folder of what was installed or trained: its output
+SETUP_LOG = "setup.log"  # in the folder of what was trained: its output
 
-# --- The generator ------------------------------------------------------------
-# Where scripts/install_generator.sh puts things, relative to generator.folder
-# (models/music_generator in config.yaml):
-GENERATOR_PD_BINARY = "Pd.app/Contents/Resources/bin/pd"
-GENERATOR_EXTERNALS = "externals/mrt2~"
-GENERATOR_EXTERNAL_FILE = GENERATOR_EXTERNALS + "/mrt2~.pd_darwin"
-GENERATOR_ASSETS = "magenta-rt-v2/resources"
-GENERATOR_ASSET_FILES = (  # below GENERATOR_ASSETS: what mrt2~ loads as its assets
-    "musiccoca/audio_preprocessor.tflite",
-    "musiccoca/mapper.tflite",
-    "musiccoca/music_encoder.tflite",
-    "musiccoca/pretrained_vector_quantizer.tflite",
-    "musiccoca/spm.model",
-    "musiccoca/text_encoder.tflite",
-    "spectrostream/decoder.safetensors",
-    "spectrostream/encoder.safetensors",
-    "spectrostream/quantizer.safetensors",
-    "spectrostream/spectrostream_encoder.mlxfn",
-)
-GENERATOR_MODEL_FILE = "magenta-rt-v2/models/{model}/{model}.mlxfn"
-AUDIO_RATE = 48000  # the only rate the model produces
-MODEL_FRAME_S = 0.040  # the model produces audio in frames of this length
+# --- The library of songs a session can play ---------------------------------------
+LIBRARY_DIR = Path("library")
+# A song is a folder: its marks and what it is called in this file, its picture in this one,
+# then the suffix of the picture's kind.
+FILE_SONG, FILE_COVER = "song.json", "cover"
 
 # --- Session folder -----------------------------------------------------------
 SESSIONS_DIR = Path("sessions")
@@ -87,19 +70,12 @@ FILE_FILTERED = "filtered.f32"
 FILTERED_DTYPE = "<f4"  # little-endian float32
 FILE_TICKS = "ticks.jsonl"
 FILE_EVENTS = "events.jsonl"
-FILE_GENERATOR = "generator.jsonl"  # every message the music generator was sent
-FILE_AUDIO = "audio.wav"
-FILE_PD_LOG = "pd.log"
+FILE_MUSIC = "music.jsonl"  # where the music went, and why: each jump of the song
+FILE_AUDIO = "audio.wav"  # the music as it was played
 FILE_LOG = "adamus.log"
 FILE_METRICS = "metrics.json"
 FILE_ACTIVITY = "activity.jsonl"  # what the program did around this session
-# The sample of a style of music, recorded with its settings (its music at rest, then in focus
-# from SAMPLE_FOCUS_FROM_S on), and its cover: in the folder of the style, named by its id, in
-# STYLE_FILES, and as a session keeps them, beside its settings. A sample is a WAV, which a
-# player puts exactly where it is asked to (in a FLAC it lands seconds off) and the program reads.
-FILE_SAMPLE, FILE_COVER = "sample.wav", "cover.png"
-STYLE_FILES = Path(__file__).parent / "server" / "styles"
-SAMPLE_FOCUS_FROM_S = 10.0
+SONG_DIR = "song"  # the song the session played, as the library had it then: a copy of it
 
 # --- Datasets: <DATASETS_DIR>/<dataset>/<recording>/ holds one recording ----------
 DATASETS_DIR = Path("data")
@@ -114,5 +90,5 @@ TEXT_ENCODING = (
 PERCENTILE = 95  # the "high" value reported next to a median
 
 # --- The processes the program starts, and the computer they talk on ------------
-LOCAL_HOST = "127.0.0.1"  # Pd and the server of the API listen here only: this computer
-STOP_WAIT_S = 5.0  # the longest Pd or the server may take to end when told to
+LOCAL_HOST = "127.0.0.1"  # the server of the API listens here only: this computer
+STOP_WAIT_S = 5.0  # the longest the server may take to end when told to

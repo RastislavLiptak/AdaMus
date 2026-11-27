@@ -22,7 +22,7 @@ from tests.support.finished_sessions import (
 from tests.support.short_sessions import SHORT, short_session
 from tests.support.stand_in_devices import (
     StandInClock,
-    StandInGenerator,
+    StandInMusic,
     StandInSource,
     StopWhen,
 )
@@ -42,9 +42,9 @@ class TestRealDevices:
             raise AssertionError("a recording is played: the headset is not opened")
 
         monkeypatch.setattr(session_module, "HeadsetSource", no_headset)
-        generator, stop = StandInGenerator(), threading.Event()
-        devices = session_module.real_devices(config_with(), Path("rec"), generator, stop)
-        assert devices.generator is generator and devices.stop is stop
+        music, stop = StandInMusic(StandInClock()), threading.Event()
+        devices = session_module.real_devices(config_with(), Path("rec"), music, stop)
+        assert devices.music is music and devices.stop is stop
         assert isinstance(devices.clock, session_module.Clock)
         source = devices.source
         assert isinstance(source, RecordingSource) and source._clock is devices.clock
@@ -56,7 +56,7 @@ class TestRealDevices:
     def test_without_a_recording_the_headset_of_the_configuration_is_read(self):
         muse_s = {"name": "Muse S", "id": 39}
         devices = session_module.real_devices(
-            config_with(board=muse_s), None, StandInGenerator(), threading.Event()
+            config_with(board=muse_s), None, StandInMusic(StandInClock()), threading.Event()
         )
         source = devices.source
         assert isinstance(source, HeadsetSource)
@@ -83,7 +83,8 @@ class TestRealDevices:
 class TestRunSession:
     def devices(self, matrix):
         self.source = StandInSource(matrix)
-        return session_module.Devices(self.source, StandInGenerator(), StopWhen(), StandInClock())
+        clock = StandInClock()
+        return session_module.Devices(self.source, StandInMusic(clock), StopWhen(), clock)
 
     def test_folder_is_given_before_the_session_runs_and_the_source_is_released(self, tmp_path):
         given = []

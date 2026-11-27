@@ -7,7 +7,6 @@ events and its activity.jsonl.
 """
 
 import json
-import re
 from pathlib import Path
 from typing import Any
 
@@ -16,13 +15,11 @@ from adamus.activity_log import (
     ACTION_APP_ENDED,
     ACTION_PROGRAM_STOPPED,
     ACTION_RECORDING_NOT_STORED,
-    ACTION_SESSION_STARTED,
 )
 from adamus.datasets import person_of
 from adamus.evaluation.metrics import PERCENTILE_KEY
 from adamus.evaluation.session_reader import SessionFolder
 from adamus.evaluation.session_statistics import OK, FocusStatistics, Statistics
-from adamus.realtime.music_generator import REPORT_OUTPUT_LOST
 from adamus.server.api_models import (
     Fact,
     Format,
@@ -37,6 +34,7 @@ from adamus.session_format import (
     REASON_USER,
     read_json,
 )
+from adamus.song_library import MARKS, song_in
 
 ENDED_BY = {
     REASON_USER: "Stopped by the operator",
@@ -65,21 +63,12 @@ SETTING_LABELS = {
     "board.name": "Headset",
     "board.id": "BrainFlow Board",
     "board.serial_number": "Headset Serial Number",
-    "generator.folder": "Generator Folder",
-    "generator.model": "Music Model",
-    "generator.style_guidance": "Style Guidance",
-    "generator.note_guidance": "Note Guidance",
-    "generator.prompt_idle": "Music at Rest",
-    "generator.prompt_focus": "Music in Focus",
     "timeouts.stream_s": "Stream Timeout",
-    "timeouts.pd_connect_s": "Pure Data Connection Timeout",
-    "timeouts.model_load_s": "Model Load Timeout",
     "poll_s": "Poll Interval",
 }
 SERIAL_NUMBER = "board.serial_number"
 SECONDS = "_s"  # the ending of a setting given in seconds
-SHOWN_ELSEWHERE = {"protocol", "styles"}  # in the sections of the blocks and of the music style
-RELEASE = r"\d+(\.\d+)+"  # the numbers of a release, as 0.57.0
+SHOWN_ELSEWHERE = {"protocol"}  # in the section of the blocks
 Item = Fact | Table
 
 
@@ -249,25 +238,34 @@ def signal_section(
     return Section(title="Signal", items=items)
 
 
-def output_lost_at(activity: list[dict[str, Any]]) -> float | None:
-    """When the audio output was disconnected while the session ran, if it was."""
-    started = [k for k, entry in enumerate(activity) if entry["type"] == ACTION_SESSION_STARTED]
-    after = activity[started[0] :] if started else []
-    lost = [entry["t"] for entry in after if entry["type"] == REPORT_OUTPUT_LOST]
-    return lost[0] if lost else None
+def music_source_sections(session: SessionFolder) -> list[Section]:
+    """The song the music was made of, as the library had it then: what it is called, and how
+    much of it was marked each state; none of a session whose music never started."""
+    folder = session.directory / c.SONG_DIR
+    if not (folder / c.FILE_SONG).is_file():
+        return []
+    song = song_in(folder)
+    marked = {state: sum(m.end_s - m.start_s for m in song.marks if m.mark == state)
+              for state in MARKS}  # fmt: skip
+    items: list[Item] = [
+        fact("Title", song.title),
+        fact("Artist", song.artist),
+        fact("Length", song.duration_s, "duration"),
+        fact("Marked Rest", marked[c.REST], "duration"),
+        fact("Marked Focus", marked[c.FOCUS], "duration"),
+    ]
+    return [Section(title="Music Source", items=items)]
 
 
-def music_section(
-    session: SessionFolder, metrics: dict[str, Any], activity: list[dict[str, Any]]
-) -> Section:
-    """Where the music played, how quickly it was told, and how it followed."""
+def music_section(session: SessionFolder, metrics: dict[str, Any]) -> Section:
+    """Where the music played, how quickly it was told, how it followed, and how often it went
+    elsewhere in its song: not where it began, nor where it went on."""
     latency, interval = part(metrics, "control_latency_s"), part(metrics, "step_interval_s")
     response, total = part(metrics, "music_response"), part(metrics, "total_response_s")
     dropouts = part(metrics, "audio_dropouts")
-    lost = output_lost_at(activity)
+    jumps = sum(1 for d in session.music_decisions if d["from_s"] not in (None, d["to_s"]))
     items: list[Item] = [
         fact("Audio Output", session.meta.get("audio_output")),
-        *([fact("Audio Output Disconnected", lost, "datetime")] if lost is not None else []),
         *spread_facts("Control Latency", latency, ("median", PERCENTILE_KEY, "max")),
         *spread_facts("Interval Between Steps", interval, ("median", PERCENTILE_KEY)),
         fact("Music Following Focus (Spearman)", response.get("rho"), "decimal"),
@@ -275,9 +273,7 @@ def music_section(
         fact("Time to Audible Focus On", total.get("rise_s"), "duration"),
         fact("Time to Audible Focus Off", total.get("fall_s"), "duration"),
         fact("Audio Dropouts", dropouts.get("count"), "count"),
-        fact("Audio Dropouts in Total", dropouts.get("total_s"), "duration"),
-        fact("First Sound", dropouts.get("first_sound_s"), "duration"),
-        fact("Recording Length Error", metrics.get("recording_length_error_s"), "duration"),
+        fact("Jumps in the Song", jumps, "count"),
     ]
     return Section(title="Music", items=items)
 
@@ -349,19 +345,12 @@ def configuration_section(session: SessionFolder) -> Section:
     return Section(title="Configuration", items=items)
 
 
-def release(version_line: str | None) -> str | None:
-    """The release in what a program says of its version: 0.57.0 of 'Pd-0.57.0 ("")'."""
-    found = re.search(RELEASE, version_line or "")
-    return found.group() if found else version_line
-
-
 def software_section(session: SessionFolder) -> Section:
     """The program and the libraries the session ran with."""
     meta = session.meta
     items: list[Item] = [
         fact("AdaMus Commit", meta["adamus_commit"]),
         fact("Python", meta["python"]),
-        fact("Pure Data", release(meta["pd"])),
         *(fact(name, version) for name, version in meta["versions"].items()),
     ]
     return Section(title="Software", items=items)

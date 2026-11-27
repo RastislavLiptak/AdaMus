@@ -1,7 +1,8 @@
 # AdaMus
 
-AdaMus generates instrumental music that changes with your EEG, measured in real time by a
-Muse headset. Each session is stored with everything it recorded, and the app shows its results
+AdaMus plays a song of your own that follows your EEG, measured in real time by a Muse headset:
+the parts of it you marked rest while you rest, those you marked focus while you focus, joined
+on the beat. Each session is stored with everything it recorded, and the app shows its results
 and plays it back on a timeline.
 
 ## Datasets
@@ -21,9 +22,8 @@ The recordings are cut and resampled from the original files; no electrode is le
 
 ## Configuration
 
-Everything that can be tuned is in `config.yaml`: the headset, the protocol, the music and the
-timeouts. The sessions are stored in `sessions/`; what the program installs and trains itself
-is in `models/`.
+Everything that can be tuned is in `config.yaml`: the headset, the protocol and the timeouts.
+The sessions are stored in `sessions/`; what the program trains itself is in `models/`.
 
 ## License
 
@@ -33,9 +33,9 @@ is in `models/`.
 
 | | |
 |---|---|
-| Computer | A Mac with Apple Silicon and macOS 26 or later: the music model runs in real time only there. |
+| Computer | A Mac with macOS 26 or later. |
 | Python | 3.12 |
-| Tools | Xcode 26 or later with its Metal toolchain, to build the app and the music generator; `cmake`, `git` and `curl` for the generator too. |
+| Tools | Xcode 26 or later, to build the app. |
 | Internet | On the first start only, to download what the program sets up. |
 | Headset | A Muse 2, or none: then a recording of a dataset is played. |
 
@@ -47,7 +47,7 @@ Once, in a terminal:
 git clone https://github.com/RastislavLiptak/AdaMus.git
 cd AdaMus
 python3.12 -m venv .venv
-.venv/bin/pip install -e ".[dev,generator]"
+.venv/bin/pip install -e ".[dev]"
 sh scripts/build_app.sh
 ```
 

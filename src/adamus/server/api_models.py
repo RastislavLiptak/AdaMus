@@ -213,26 +213,28 @@ class Highlight(BaseModel):
     colour: Colour  # of the kind of result, as the timeline draws it
 
 
-class MusicPart(BaseModel):
-    """One of the two forms of a style's music, as its sample plays it."""
+class SongPart(BaseModel):
+    """A stretch of a song, or of the music of a session, that belongs to one state: in its
+    colour, as the timeline draws the state, and called as the state is."""
 
+    start_s: float
+    end_s: float
+    mark: str  # the id of the mark: rest or focus
     title: str
-    prompt: str  # what the generator was told to play
-    sound: str  # how loud, and with what
-    colour: Colour  # of the state it is played in, as the timeline draws it
-    from_s: float  # where it begins in the sample
+    colour: Colour
 
 
-class Music(BaseModel):
-    """The style a session played, for its overview: its forms as its sample plays them, how
-    loud the sample is along it, and its other settings. The sample and the cover come from the
-    session's own addresses."""
+class Song(BaseModel):
+    """A song of the library, or a draft of one, as it is shown and marked: how loud it is along
+    it, its marks."""
 
+    id: str
     title: str
-    parts: list[MusicPart]
-    loudness: list[float]  # of equal slices of the sample, the loudest 1
-    length_s: float  # of the sample
-    facts: list[Fact]
+    artist: str | None
+    length_s: float
+    loudness: list[float]  # of equal slices of the song, the loudest 1
+    parts: list[SongPart]  # what is marked, in the order of the song
+    cover: str | None  # the version of its picture, which changes with it; none without one
 
 
 class Dashboard(BaseModel):
@@ -247,7 +249,7 @@ class Dashboard(BaseModel):
     failures: list[str]  # what went wrong, each on its own
     caution: str | None
     highlights: list[Highlight]
-    music: Music | None  # none of a session from before styles
+    song: Song | None  # the source of its music, as it kept it; none if its music never began
     sections: list[Section]
 
 
@@ -261,19 +263,11 @@ class SourceChoice(BaseModel):
     recordings: list[str]  # one is chosen from them; none to choose from for a live source
 
 
-class StyleChoice(BaseModel):
-    """A style of music a session can play. A sample of it comes from the style's own address."""
-
-    id: str
-    title: str  # as the form shows it
-
-
 class NewSessionForm(BaseModel):
     """What the form for a new session offers, and the rule its name must keep."""
 
     sources: list[SourceChoice]
     sources_hint: str  # what to tell the operator when there is none
-    styles: list[StyleChoice]  # in the order of the configuration; the first is chosen at first
     name_pattern: str  # a regular expression the whole name must match
     name_hint: str  # what to tell the operator when it does not
 
@@ -299,7 +293,7 @@ class AudioOutputs(BaseModel):
 class SessionRequest(BaseModel):
     source_id: str
     recording: str | None = None  # of a dataset; none of the headset
-    style_id: str  # the music it plays
+    song_id: str  # the song its music is made of
     name: str
     output: str  # the id of the audio output the music is to play on
 
@@ -312,3 +306,44 @@ class RunState(BaseModel):
     phase: Phase
     session_id: str | None  # the folder of the session of this run, once it has one
     problem: str | None  # why the session of this run could not start, or ended in an error
+
+
+# --- The library of songs ------------------------------------------------------------
+
+
+class MarkChoice(BaseModel):
+    """What a part of a song can be marked: its id, as it is called and its colour."""
+
+    id: str
+    title: str
+    colour: Colour
+
+
+class SongPage(BaseModel):
+    total: int  # songs in all
+    songs: list[Song]  # by title
+
+
+class SongMarks(BaseModel):
+    marks: list[MarkChoice]  # what a part can be marked, in this order
+    unmarked: str  # what a part no mark covers is called
+
+
+class DraftKept(BaseModel):
+    """What a draft that goes into the library is called, and its picture."""
+
+    title: str
+    artist: str | None = None  # none, or empty, when it is not known
+    picture: str | None = None  # the path of a picture on this computer; none keeps its own
+
+
+class DraftOfFile(BaseModel):
+    path: str  # of the song file on this computer, which the draft copies
+
+
+class SongMark(BaseModel):
+    """Mark the stretch from ``start_s`` to ``end_s`` as ``mark``; None unmarks it."""
+
+    start_s: float
+    end_s: float
+    mark: str | None = None

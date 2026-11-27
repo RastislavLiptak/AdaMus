@@ -24,7 +24,9 @@ struct ProgramView: View {
         case .ended(let said):
             Ended(said: said)
         case .ready(let api):
-            WorkspaceView(api: api)
+            if let library = program.library {  // made with the program's API, as it became ready
+                WorkspaceView(api: api, library: library)
+            }
         }
     }
 }

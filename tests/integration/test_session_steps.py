@@ -1,8 +1,7 @@
 """realtime.session.Session, step by step: what each step computes from the signal, what
-it sends to the generator, and the blocks it follows; run with stand-in devices."""
+it tells the music, and the blocks it follows; run with stand-in devices."""
 
 import json
-import re
 
 import numpy as np
 import pytest
@@ -27,8 +26,6 @@ from tests.support.finished_sessions import (
 from tests.support.short_sessions import (
     CONTROL,
     CONTROL_STEPS,
-    FOCUS_STYLE,
-    IDLE_STYLE,
     SHORT,
     STEPS,
     short_session,
@@ -81,7 +78,7 @@ class TestSteps:
             "t_sent": (float, type(None)), "block_index": int, "block_label": str,
             "full_window": bool, "max_abs_uv": list, "valid": bool,
             "score": (float, type(None)), "f": (float, type(None)),
-            "f_held": bool, "w_idle": float, "w_focus": float,
+            "f_held": bool, "told": (str, type(None)),
         }  # fmt: skip
         assert list(kinds) == list(Tick.__annotations__)  # what the readers are typed against
         for tick in (short.ticks[0], short.ticks[-1]):
@@ -134,15 +131,14 @@ class TestSteps:
             "score",
             "f",
             "f_held",
-            "w_idle",
-            "w_focus",
+            "told",
             "block_index",
             "full_window",
         )
         assert [[t[key] for key in keys] for t in other.ticks] == [
             [t[key] for key in keys] for t in control.ticks
         ]
-        assert other.generator.weights == control.generator.weights
+        assert other.music.states == control.music.states
 
     def test_no_step_before_its_whole_signal_has_arrived(self, tmp_path):
         matrix = synthetic_matrix(SHORT)[:, : CONTEXT - 1]
@@ -209,7 +205,7 @@ class TestControl:
         for tick in control.ticks:
             level = next_level(level, tick["score"])
             assert tick["f"] == pytest.approx(focus_of(level))
-            assert (tick["w_focus"], tick["w_idle"]) == (tick["f"], 1.0 - tick["f"])
+            assert tick["told"] == (c.FOCUS if tick["f"] >= c.FOCUS_THRESHOLD else c.REST)
 
     def test_scores_are_those_of_the_detector_over_the_raw_file(self, control):
         """The record alone gives the scores again: raw.csv and the model copy."""
@@ -219,8 +215,8 @@ class TestControl:
         assert [t["score"] for t in control.ticks] == pytest.approx(expected, rel=1e-4, abs=1e-6)
 
     def test_music_follows_the_blocks(self, control):
-        """The synthetic FOCUS blocks have the powers of the n-back task: every FOCUS block
-        is fuller than every REST block, and most of its steps fuller than those of a REST."""
+        """The synthetic c.FOCUS blocks have the powers of the n-back task: every c.FOCUS block
+        is fuller than every c.REST block, and most of its steps fuller than those of a c.REST."""
         assert min(mean_f(control, 1), mean_f(control, 3)) > 0.15 + max(
             mean_f(control, 0), mean_f(control, 2)
         )
@@ -229,23 +225,12 @@ class TestControl:
         above = np.mean([[a > b for b in rest] for a in focus])
         assert above > 0.75, above
 
-    def test_one_pair_of_weights_is_sent_for_every_valid_step(self, control):
+    def test_the_music_is_told_the_state_of_every_valid_step(self, control):
         sent = [tick for tick in control.ticks if tick["t_sent"] is not None]
         assert [tick["k"] for tick in sent] == list(range(CONTROL_STEPS))
-        assert control.generator.weights == [
-            (round(tick["w_idle"], 3), round(tick["w_focus"], 3)) for tick in sent
-        ]
+        assert control.music.states == [tick["told"] for tick in sent]
 
-    def test_weights_of_a_step_are_sent_together(self, control):
-        step_messages = [m for m in control.generator.messages if m.count("prompt") == 2]
-        assert len(step_messages) == CONTROL_STEPS
-        assert re.fullmatch(
-            rf"prompt 0 {IDLE_STYLE} \d\.\d{{3}}; prompt 1 {FOCUS_STYLE} \d\.\d{{3}}; "
-            r"volume -?\d+\.\d\d; drumless [01];",
-            step_messages[0],
-        )
-
-    def test_invalid_step_sends_nothing_and_holds_f_and_the_weights(self, tmp_path):
+    def test_invalid_step_tells_nothing_and_holds_f(self, tmp_path):
         matrix = synthetic_matrix(CONTROL)
         bad = 150
         matrix[2, CONTEXT + bad * H - 10] += 5000.0  # a spike on AF7 in the last hop of step 150
@@ -255,24 +240,23 @@ class TestControl:
         before = session.ticks[bad - 1]
         for k in invalid:
             tick = session.ticks[k]
-            assert (tick["t_sent"], tick["f_held"], tick["score"]) == (None, True, None)
-            assert (tick["f"], tick["w_idle"], tick["w_focus"]) == (
-                before["f"],
-                before["w_idle"],
-                before["w_focus"],
-            )
+            assert (tick["t_sent"], tick["told"], tick["f_held"], tick["score"]) == (
+                None, None, True, None,
+            )  # fmt: skip
+            assert tick["f"] == before["f"]
             assert tick["max_abs_uv"][0] > c.ARTIFACT_UV
         after = session.ticks[invalid[-1] + 1]
         assert (after["f_held"], after["valid"]) == (False, True) and after["t_sent"] is not None
-        assert len(session.generator.weights) == CONTROL_STEPS - len(invalid)
+        assert len(session.music.states) == CONTROL_STEPS - len(invalid)
 
-    def test_without_clean_signal_the_music_stays_quiet(self, tmp_path):
+    def test_without_clean_signal_the_music_stays_at_rest(self, tmp_path):
         matrix = synthetic_matrix(CONTROL)
         matrix[2] += 1000.0 * np.sign(np.sin(2 * np.pi * 3 * np.arange(matrix.shape[1]) / FS))
         session = FinishedSession(tmp_path, config_with(CONTROL), matrix)
         assert session.result.reason == REASON_END_OF_STREAM  # nothing ends it early
-        assert session.generator.weights == []
-        assert all(t["f"] is None and t["w_focus"] == 0.0 for t in session.ticks)
+        assert session.music.states == []  # it is never told otherwise than its start
+        assert [line["mark"] for line in session.music_lines] == [c.REST]
+        assert all(t["f"] is None and t["told"] is None for t in session.ticks)
 
     @pytest.mark.parametrize("value", [np.nan, np.inf])
     def test_samples_that_are_not_numbers_only_spoil_the_steps_that_hold_them(

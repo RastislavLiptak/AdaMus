@@ -11,7 +11,7 @@ import re
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, NotRequired, TypedDict
+from typing import Any, TypedDict
 
 from adamus.constants import LINE_END
 from adamus.errors import AdamusError
@@ -19,19 +19,20 @@ from adamus.errors import AdamusError
 FOLDER_TIME = "%Y%m%d-%H%M%S"  # the local time the session started
 RAW_SEPARATOR = chr(9)  # a tab, as in the raw file BrainFlow writes for a headset
 NAME_SEPARATOR = "_"  # between the time the session started and its name
-LOG_TIME_PRECISION = "milliseconds"  # of the time each line of adamus.log and pd.log begins with
+LOG_TIME_PRECISION = "milliseconds"  # of the time each line of adamus.log begins with
 LOG_SEPARATOR = " "  # between the time of a line of a log and what it says
 
 # The types of the lines of events.jsonl.
 EVENT_SESSION_START = "SESSION_START"
 EVENT_SESSION_END = "SESSION_END"
 EVENT_STREAM_START = "STREAM_START"
-EVENT_FUDI = "FUDI"
+EVENT_MUSIC_START = "MUSIC_START"  # the first frame of the music went to the output
+EVENT_MUSIC_END = "MUSIC_END"  # the music stopped
 EVENT_BLOCK_START = "BLOCK_START"
 EVENT_ERROR = "ERROR"
 
 # Where a session was when it failed, in its ERROR event.
-STAGE_RECORD, STAGE_GENERATOR, STAGE_SOURCE = "record", "generator", "source"
+STAGE_RECORD, STAGE_MUSIC, STAGE_SOURCE = "record", "music", "source"
 STAGE_LOOP, STAGE_STREAM = "loop", "stream"
 
 # Why a session ended, in its SESSION_END event.
@@ -48,7 +49,7 @@ class Tick(TypedDict):
     t_eeg: float  # the time of that last sample, from the source
     t_proc_start: float
     t_proc_end: float
-    t_sent: float | None  # None when the weights were not sent
+    t_sent: float | None  # when the music was told the state; None when it was not
     block_index: int
     block_label: str
     full_window: bool  # the whole window lies inside the block
@@ -57,8 +58,7 @@ class Tick(TypedDict):
     score: float | None
     f: float | None
     f_held: bool
-    w_idle: float
-    w_focus: float
+    told: str | None  # the state the music was told, REST or FOCUS; None when it was not
 
 
 class EventFields(TypedDict, total=False):
@@ -70,7 +70,7 @@ class EventFields(TypedDict, total=False):
     index: int  # BLOCK_START
     label: str  # BLOCK_START
     marker: int  # BLOCK_START
-    msg: str  # FUDI
+    dropouts: int  # MUSIC_END: blocks the output played before they were ready
     where: str  # ERROR
     message: str  # ERROR
 
@@ -83,19 +83,26 @@ class Event(EventFields):
     type: str
 
 
-class GeneratorMessage(TypedDict):
-    """One line of generator.jsonl: what the music generator was sent, at once."""
+START, CONTINUE, SWITCH = "start", "continue", "switch"  # why the music went where it did
+
+
+class MusicDecision(TypedDict):
+    """One line of music.jsonl: at ``t`` the music went from the song at ``from_s`` (none at the
+    start) to the song at ``to_s``, following ``mark``; ``kind`` says why: it started, a part ran
+    out, or the state switched."""
 
     t: float
     n: int  # samples received so far
-    msg: str  # one or more FUDI messages
+    kind: str
+    mark: str
+    from_s: float | None
+    to_s: float
 
 
 class SessionFacts(TypedDict):
-    """What a session ran on: its source, its detector and its generator."""
+    """What a session ran on: its source, its detector and its music."""
 
-    pd: str | None
-    audio_output: NotRequired[str | None]  # the music was played on; not known of older sessions
+    audio_output: str  # the music was played on
     board_id: int
     fs: int
     electrode_rows: dict[str, int]

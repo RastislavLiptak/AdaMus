@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "adamus"
 # Not a release number: releases are git tags, and a session records the commit it ran from.
 version = "0"
-description = "Real-time control of generated music by focus detected in EEG"
+description = "Music that follows the focus detected in EEG"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -20,13 +20,13 @@ dependencies = [
     "pydantic==2.14.3",
     "pyyaml==6.0.3",
     "scipy==1.18.1",
+    "sounddevice==0.5.6",  # plays the music of a session on the chosen output
     "soundfile==0.14.0",
+    "tinytag==2.3.2",  # the title and the picture a song file carries
     "uvicorn==0.54.0",
 ]
 
 [project.optional-dependencies]
-# The same release as the mrt2~ object that scripts/install_generator.sh builds.
-generator = ["magenta-rt[mlx]==2.0.3"]
 dev = [
     "httpx==0.28.1",  # the test client of the API
     "hypothesis==6.170.15",
@@ -47,8 +47,7 @@ where = ["src"]
 include = ["adamus*"]  # src/ui is the app, built by Xcode
 
 [tool.setuptools.package-data]
-"adamus.realtime" = ["pure_data_patch.pd"]
-"adamus.server" = ["head_model.json", "styles/*/*"]  # head: scripts/export_head_model.py
+"adamus.server" = ["head_model.json"]  # head: scripts/export_head_model.py
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

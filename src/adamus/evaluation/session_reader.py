@@ -17,11 +17,11 @@ from adamus.detection.signal_processing import Steps
 from adamus.errors import AdamusError
 from adamus.protocol import BlockSpan, block_spans
 from adamus.session_format import (
-    EVENT_FUDI,
+    EVENT_MUSIC_START,
     RAW_SEPARATOR,
     Event,
-    GeneratorMessage,
     Meta,
+    MusicDecision,
     Tick,
     read_json,
     read_jsonl,
@@ -66,18 +66,16 @@ class SessionFolder:
         """The first event of a kind, or None."""
         return next((event for event in self.events if event["type"] == kind), None)
 
-    def fudi_time(self, message: str) -> float | None:
-        """When a session message (e.g. ``rec start;``) was sent."""
-        for event in self.events:
-            if event["type"] == EVENT_FUDI and event.get("msg") == message.strip():
-                return float(event["t"])
-        return None
+    @property
+    def music_began(self) -> float | None:
+        """When the first frame of the music went to the output; None when it never did."""
+        began = self.event(EVENT_MUSIC_START)
+        return None if began is None else float(began["t"])
 
     @property
-    def generator_messages(self) -> list[GeneratorMessage]:
-        """Every message the music generator was sent; none of a session from before they were
-        recorded."""
-        path = self.directory / c.FILE_GENERATOR
+    def music_decisions(self) -> list[MusicDecision]:
+        """Where the music went, and why; none when it never began."""
+        path = self.directory / c.FILE_MUSIC
         return read_jsonl(path) if path.is_file() else []
 
     def controlled_ticks(self) -> list[Tick]:

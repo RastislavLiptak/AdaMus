@@ -62,8 +62,9 @@ struct SessionView: View {
         case .overview:
             ofTheDashboard {
                 OverviewView(
-                    dashboard: $0, electrodes: session.electrodes, music: session.api.music(of: session.summary.id),
-                    player: session.sample)
+                    dashboard: $0, electrodes: session.electrodes,
+                    songFiles: { [api = session.api, id = session.summary.id] in api.song(ofSession: id, $0) },
+                    player: session.music)
             }
         case .details:
             ofTheDashboard { DetailsView(dashboard: $0) }

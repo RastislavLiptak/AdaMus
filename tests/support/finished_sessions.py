@@ -10,13 +10,12 @@ from adamus.config import parse_config, read_yaml
 from adamus.detection.signal_processing import Steps
 from adamus.realtime.eeg_source import RecordingSource
 from adamus.realtime.session import Devices, Session
-from adamus.session_format import EVENT_ERROR, EVENT_FUDI, read_jsonl
+from adamus.session_format import EVENT_ERROR, read_jsonl
 from tests.support import synthetic_dataset
 from tests.support.project_paths import CONFIG_FILE
 from tests.support.stand_in_devices import (
-    SPEAKERS,
     StandInClock,
-    StandInGenerator,
+    StandInMusic,
     StandInSource,
     StopWhen,
 )
@@ -53,7 +52,7 @@ class FinishedSession:
     """One session run to its end, and everything it left behind."""
 
     def __init__(self, root, config, matrix=None, name="S01", stop_after_steps=None,
-                 generator=None, source=None, recording=None, clock=None,
+                 music=None, source=None, recording=None, clock=None,
                  **source_options):  # fmt: skip
         """Over a board matrix of the stand-in headset, or over the ``recording`` of a dataset."""
         self.root = Path(root)
@@ -62,11 +61,9 @@ class FinishedSession:
             source = RecordingSource(config.board, recording, self.clock)
         # the stand-in headset, whose notes the tests read, or the source of a recording
         self.source: Any = source or StandInSource(matrix, **source_options)
-        self.generator = generator or StandInGenerator()
-        if not self.generator.running:  # as the program has it when a session starts
-            self.generator.start(SPEAKERS)
+        self.music = music or StandInMusic(self.clock)
         self._stop_after_steps = stop_after_steps
-        devices = Devices(self.source, self.generator, StopWhen(self._enough_steps), self.clock)
+        devices = Devices(self.source, self.music, StopWhen(self._enough_steps), self.clock)
         self._session = Session(config, name, devices, Path(root) / "sessions")
         self.directory = self._session.directory
         self.result = self._session.run()
@@ -74,6 +71,8 @@ class FinishedSession:
             self.source.close()  # as run_session does; it holds the raw file open
         self.ticks = read_jsonl(self.directory / c.FILE_TICKS)
         self.events = read_jsonl(self.directory / c.FILE_EVENTS)
+        music = self.directory / c.FILE_MUSIC
+        self.music_lines = read_jsonl(music) if music.is_file() else []
 
     def _enough_steps(self):
         if self._stop_after_steps is None:
@@ -89,7 +88,3 @@ class FinishedSession:
 
     def events_of(self, kind):
         return [event for event in self.events if event["type"] == kind]
-
-    def session_messages(self):
-        """The FUDI messages logged as events (everything but the step weights)."""
-        return [event["msg"] for event in self.events_of(EVENT_FUDI)]

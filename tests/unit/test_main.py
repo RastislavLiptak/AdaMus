@@ -60,14 +60,15 @@ def test_there_are_no_arguments_to_give(program, monkeypatch, capsys, arguments)
 
 
 def test_kill_and_a_closed_terminal_take_the_shutdown_path_of_ctrl_c(program):
-    """Otherwise Pd, which runs in its own session, would be left playing."""
+    """So that a session still ends as it should, its music stopped and recorded."""
     main.main()
     assert signal.getsignal(signal.SIGTERM) is signal.default_int_handler
     assert signal.getsignal(signal.SIGHUP) is signal.default_int_handler
 
 
 @pytest.mark.parametrize(
-    "problem", [AdamusError("the generator did not start", "  see the log"), OSError("disk full")]
+    "problem",
+    [AdamusError("the focus models cannot be read", "  see the log"), OSError("disk full")],
 )
 def test_a_problem_the_program_could_not_handle_is_one_message_and_code_1(
     program, monkeypatch, capsys, problem

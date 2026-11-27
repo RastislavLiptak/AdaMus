@@ -11,11 +11,12 @@ dist/
 .ruff_cache/
 .hypothesis/
 
-# What the program installs and trains itself, what sessions store, and the recordings of
-# the people who wore the headset: their biodata, never published
+# What the program trains itself, what sessions store, the recordings of the people who wore
+# the headset (their biodata, never published), and the songs of the library (their makers')
 /models/
 /sessions/
 /data/own_recordings/
+/library/
 
 # The app, which scripts/build_app.sh builds from src/ui into the project folder, what Xcode
 # keeps while it builds, and the state of the windows of Xcode

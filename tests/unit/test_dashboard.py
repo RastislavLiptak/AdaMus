@@ -2,6 +2,7 @@
 
 import json
 import re
+import shutil
 from dataclasses import replace
 
 import pytest
@@ -12,27 +13,26 @@ from adamus.activity_log import ACTION_SESSION_STARTED, ACTION_START_FAILED
 from adamus.config import parse_protocol
 from adamus.evaluation.session_reader import load_session_folder
 from adamus.evaluation.session_statistics import statistics_of
-from adamus.server.api_models import Fact
 from adamus.server.dashboard import (
     PENDING,
     dashboard_of,
     highlights_of,
-    music_of,
     start_problem,
     why_unreadable,
 )
 from adamus.server.dashboard_sections import (
     blocks_section,
-    configuration_section,
     ended_by,
     failures_of,
-    release,
     setting_value,
 )
+from adamus.server.songs import song_view
 from adamus.session_format import read_jsonl
+from adamus.song_library import song_in
+from tests.support.stand_in_songs import ARTIST, SONG
 
 SECTIONS = [
-    "Run", "Blocks", "Detection", "Signal", "Music", "Processing", "Configuration",
+    "Run", "Blocks", "Detection", "Signal", "Music Source", "Music", "Processing", "Configuration",
     "Software", "Activity",
 ]  # fmt: skip
 
@@ -88,16 +88,15 @@ DETAILS = {
         "Control Latency (Maximum)", "Interval Between Steps (Median)",
         "Interval Between Steps (95th Percentile)", "Music Following Focus (Spearman)",
         "Music Lag", "Time to Audible Focus On", "Time to Audible Focus Off", "Audio Dropouts",
-        "Audio Dropouts in Total", "First Sound", "Recording Length Error",
+        "Jumps in the Song",
     ],
+    "Music Source": ["Title", "Artist", "Length", "Marked Rest", "Marked Focus"],
     "Processing": [
         "Processing Time (Median)", "Processing Time (95th Percentile)",
         "Processing Time (Maximum)",
     ],
     "Configuration": [
-        "Headset", "BrainFlow Board", "Headset Serial Number", "Generator Folder", "Music Model",
-        "Style Guidance", "Note Guidance", "Stream Timeout", "Pure Data Connection Timeout",
-        "Model Load Timeout", "Poll Interval",
+        "Headset", "BrainFlow Board", "Headset Serial Number", "Stream Timeout", "Poll Interval",
     ],
 }  # fmt: skip
 
@@ -109,7 +108,7 @@ def test_the_details_name_every_fact_and_a_session_with_its_metrics_knows_each(d
         assert list(shown) == labels, title
         assert [label for label, (known, _) in shown.items() if known is None] == [], title
     software = facts(dashboard, "Software")
-    assert list(software)[:3] == ["AdaMus Commit", "Python", "Pure Data"]
+    assert list(software)[:2] == ["AdaMus Commit", "Python"]
     assert table(dashboard, "Activity").columns == ["Time", "Action", "Details"]
     assert table(dashboard, "Activity").label == "Activity"
     assert facts(dashboard, "Signal")["Record Complete"] == (
@@ -126,17 +125,6 @@ def test_the_audio_output_is_that_of_the_record_and_unknown_of_older_sessions(co
     del meta["audio_output"]
     (copied / c.FILE_META).write_text(json.dumps(meta))
     assert facts(dashboard_of(copied, None, False), "Music")["Audio Output"] == (None, "text")
-
-
-def test_an_output_disconnected_while_the_session_ran_is_said_when(copied):
-    """A disconnection logged before the session started was of the time between sessions."""
-    actions = ["AUDIO_OUTPUT_LOST", "PD_STARTED", "SESSION_STARTED", "AUDIO_OUTPUT_LOST"]
-    lines = [{"t": 100.0 + k, "type": kind} for k, kind in enumerate(actions)]
-    (copied / c.FILE_ACTIVITY).write_text("".join(json.dumps(line) + "\n" for line in lines))
-    music = facts(dashboard_of(copied, None, False), "Music")
-    assert music["Audio Output Disconnected"] == (103.0, "datetime")
-    (copied / c.FILE_ACTIVITY).write_text("".join(json.dumps(line) + "\n" for line in lines[:3]))
-    assert "Audio Output Disconnected" not in facts(dashboard_of(copied, None, False), "Music")
 
 
 def test_electrodes_the_source_lacked_are_named_as_recorded_as_zeros(copied):
@@ -269,11 +257,11 @@ def test_the_configuration_and_the_software_the_session_ran_with(dashboard, play
     assert configuration["BrainFlow Board"] == ("38", "text")  # a name, not grouped by thousands
     assert configuration["Stream Timeout"][1] == "duration"
     settings = yaml.safe_load((played.directory / c.FILE_CONFIG).read_text())
-    del settings["protocol"], settings["styles"]
+    del settings["protocol"]
     leaves = sum(len(part) if isinstance(part, dict) else 1 for part in settings.values())
-    assert len(configuration) == leaves  # every setting; the protocol and the style elsewhere
+    assert len(configuration) == leaves  # every setting; the protocol in the blocks
     software = facts(dashboard, "Software")
-    assert software["Pure Data"] == ("0.0", "text")  # the release of what Pd says: Pd-0.0-stand-in
+    assert "sounddevice" in software
     assert "Focus Model Trained On" not in software  # in the overview
     assert "numpy" in software
 
@@ -403,15 +391,6 @@ def test_a_missing_value_is_named_and_another_problem_as_python_names_it(copied)
     assert why_unreadable(copied, ValueError("x")) == f"{unreadable}: ValueError('x')"
 
 
-@pytest.mark.parametrize(
-    ("said", "shown"),
-    [('Pd-0.57.0 ("")', "0.57.0"), ("Pd-0.54.1 (test) compiled 12:00", "0.54.1"),
-     ("no number", "no number"), (None, None)],
-)  # fmt: skip
-def test_the_release_of_pure_data_is_what_its_version_says_without_the_rest(said, shown):
-    assert release(said) == shown
-
-
 def test_the_first_look_is_the_main_results(dashboard, played):
     session = load_session_folder(played.directory)
     statistics = statistics_of(session)
@@ -468,85 +447,55 @@ def test_a_recording_of_a_person_the_focus_model_learned_from_is_cautioned_of(co
     assert dashboard_of(copied, None, False).caution is None  # nor is it there any more
 
 
-def test_the_overview_has_the_music_the_session_played_with_every_setting_of_it(dashboard, played):
-    style = yaml.safe_load((played.directory / c.FILE_CONFIG).read_text())["styles"][0]
-    music = dashboard.music
-    assert music is not None and music.title == style["name"]
-    assert "Music" not in summary(dashboard)  # the music has its own box, under the results
-    rest, focus = music.parts
-    assert (rest.title, rest.prompt, rest.colour, rest.from_s) == (
-        "At Rest",
-        style["rest"],
-        "indigo",
-        0.0,
-    )
-    assert (focus.title, focus.prompt, focus.colour, focus.from_s) == (
-        "In Focus",
-        style["focus"],
-        "orange",
-        c.SAMPLE_FOCUS_FROM_S,
-    )
-    assert rest.sound == f"{style['rest_volume_db']:+g} dB · Full chords · No drums".replace(
-        "-", "−"
-    )
-    shown = {item.label: (item.value.value, item.value.format) for item in music.facts}
-    assert shown == {
-        "Tempo": (f"{style['tempo_bpm']} BPM", "text"),
-        "Chords, One a Bar": (" ".join(style["chords"]), "text"),
-        "Gap Between Chords": (style["chord_gap_s"], "duration"),
-        "Temperature": (style["temperature"], "decimal"),
-        "Top K": (style["top_k"], "count"),
+def test_the_overview_has_the_song_the_session_kept_as_it_was_then(dashboard, played):
+    """Its own copy, whatever the library does with the song later: its sound, its parts as
+    they were marked, its title, artist and picture."""
+    assert dashboard.song == song_view(song_in(played.directory / c.SONG_DIR))
+    assert dashboard.song is not None and dashboard.song.title == SONG
+    assert [(p.mark, p.title, p.colour) for p in dashboard.song.parts] == [
+        (c.REST, "Rest", "indigo"), (c.FOCUS, "Focus", "orange"),
+    ]  # fmt: skip
+    assert "Music" not in summary(dashboard)  # the song has its own box, under the results
+
+
+def test_the_details_say_what_the_session_kept_of_its_song(dashboard, played):
+    song = song_in(played.directory / c.SONG_DIR)
+    assert facts(dashboard, "Music Source") == {
+        "Title": (SONG, "text"),
+        "Artist": (ARTIST, "text"),
+        "Length": (song.duration_s, "duration"),
+        "Marked Rest": (song.duration_s / 2, "duration"),
+        "Marked Focus": (song.duration_s / 2, "duration"),
     }
+    assert facts(dashboard, "Music")["Jumps in the Song"] == (0, "count")  # switched in place
 
 
-def test_the_loudness_of_the_sample_the_session_kept_along_it(dashboard):
-    """Of the session's own copy, which stays as it was played, whatever the program ships."""
-    music = dashboard.music
-    assert music is not None and music.length_s == pytest.approx(20, abs=0.1)
-    assert len(music.loudness) == 160 and max(music.loudness) == 1 and min(music.loudness) >= 0
-    half = len(music.loudness) // 2
-    assert sum(music.loudness[half:]) > sum(music.loudness[:half])  # louder in focus
+def test_only_a_move_to_another_place_of_the_song_is_a_jump(copied):
+    went = [
+        ("start", c.REST, None, 0.0),  # where it began
+        ("continue", c.REST, 8.0, 20.0),  # the part ran out: elsewhere
+        ("switch", c.FOCUS, 24.0, 24.0),  # the song itself went on into focus
+        ("switch", c.REST, 30.0, 4.0),  # elsewhere
+    ]
+    lines = [{"t": 1.0 + i, "n": i, "kind": kind, "mark": mark, "from_s": a, "to_s": b}
+             for i, (kind, mark, a, b) in enumerate(went)]  # fmt: skip
+    text = "".join(json.dumps(line) + c.LINE_END for line in lines)
+    (copied / c.FILE_MUSIC).write_text(text, encoding="utf-8")
+    jumps = facts(dashboard_of(copied, None, False), "Music")["Jumps in the Song"]
+    assert jumps == (2, "count")
 
 
-def test_a_session_that_kept_no_sample_has_no_music_on_its_overview(copied):
-    (copied / c.FILE_SAMPLE).unlink()
-    assert dashboard_of(copied, None, False).music is None
-
-
-@pytest.mark.parametrize(
-    ("changes", "sound"),
-    [({"focus_power_chords": True, "focus_drums": False}, "+2 dB · Power chords · No drums"),
-     ({"focus_power_chords": False, "focus_drums": True}, "+2 dB · Full chords · Drums")],
-)  # fmt: skip
-def test_whether_power_chords_and_drums_come_in_focus(played, changes, sound):
-    session = load_session_folder(played.directory)
-    style = {**session.settings["styles"][0], **changes, "focus_volume_db": 2}
-    music = music_of(replace(session, settings={**session.settings, "styles": [style]}))
-    assert music is not None and music.parts[1].sound == sound
-
-
-def test_a_session_from_before_styles_shows_its_two_texts_among_its_settings(played):
-    session = load_session_folder(played.directory)
-    old = {key: part for key, part in session.settings.items() if key != "styles"}
-    old["generator"] = {**old["generator"], "prompt_idle": "quiet slow solo piano",
-                        "prompt_focus": "fast loud piano concerto"}  # fmt: skip
-    session = replace(session, settings=old)
-    assert music_of(session) is None
-    shown = {
-        item.label: item.value.value
-        for item in configuration_section(session).items
-        if isinstance(item, Fact)
-    }
-    assert (shown["Music at Rest"], shown["Music in Focus"]) == (
-        "quiet slow solo piano", "fast loud piano concerto",
-    )  # fmt: skip
+def test_a_session_that_kept_no_song_has_none_on_its_overview_nor_in_its_details(copied):
+    shutil.rmtree(copied / c.SONG_DIR)
+    shown = dashboard_of(copied, None, False)
+    assert shown.song is None and "Music Source" not in [s.title for s in shown.sections]
 
 
 @pytest.mark.parametrize(
     ("path", "raw", "shown"),
     [("board.serial_number", "", ("The first one found", "text")),
      ("board.serial_number", "MuseS-1A2B", ("MuseS-1A2B", "text")),
-     ("generator.port", 0, ("0", "text")), ("generator.prompt_idle", "", ("", "text"))],
+     ("board.name", "", ("", "text")), ("timeouts.stream_s", 5, (5, "duration"))],
 )  # fmt: skip
 def test_only_a_serial_number_not_given_is_the_first_headset_found(path, raw, shown):
     found = setting_value(path, raw)
@@ -570,6 +519,6 @@ def test_a_session_without_a_step_got_to_no_block(copied):
 
 def test_a_start_that_failed_after_the_folder_was_made_is_said_with_its_reason():
     tried = {"t": 1.0, "type": ACTION_SESSION_STARTED}
-    failed = {"t": 2.0, "type": ACTION_START_FAILED, "message": "Pure Data did not answer"}
-    assert start_problem([tried, failed]) == "This session did not start: Pure Data did not answer"
+    failed = {"t": 2.0, "type": ACTION_START_FAILED, "message": "TV is not connected"}
+    assert start_problem([tried, failed]) == "This session did not start: TV is not connected"
     assert start_problem([failed, tried]) is None  # that was an attempt before this session

@@ -1,4 +1,5 @@
-// The command of the menu bar that is the app's own: a new session, in place of File ▸ New.
+// The commands of the menu bar that are the app's own: a new session, in place of File ▸ New;
+// and none that hides the sidebar, which every window of the app always shows.
 import SwiftUI
 
 extension FocusedValues {
@@ -14,5 +15,6 @@ struct WorkspaceCommands: Commands {
                 .keyboardShortcut("n")
                 .disabled(workspace?.isInFront != true)
         }
+        CommandGroup(replacing: .sidebar) {}
     }
 }

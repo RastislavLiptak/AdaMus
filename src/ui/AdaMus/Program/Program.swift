@@ -82,6 +82,9 @@ final class Program {
     }
 
     private(set) var state: State
+    /// The songs of the program, while it is ready: one library, which every window that shows it
+    /// shares.
+    private(set) var library: LibraryModel?
     /// The last lines the program printed to its error output, read by no view as they come.
     @ObservationIgnored private var errorLines: [String] = []
     /// The executable of the program and the folder it runs in; none for a program the app did
@@ -102,6 +105,7 @@ final class Program {
     init(running api: APIClient) {
         command = nil
         state = .ready(api)
+        library = LibraryModel(api: api)
     }
 
     /// The program of the project folder the app lies in.
@@ -175,7 +179,10 @@ final class Program {
         for await line in Lines.of(output) {
             switch ProgramMessage(line: line) {
             case .checks(let checks): state = .starting(checks)
-            case .ready(let address, let token): state = .ready(APIClient(address: address, token: token))
+            case .ready(let address, let token):
+                let api = APIClient(address: address, token: token)
+                library = LibraryModel(api: api)
+                state = .ready(api)
             case nil: continue  // not a message: nothing else is printed there
             }
         }
@@ -201,6 +208,7 @@ final class Program {
     private func ended(reason: Process.TerminationReason, status: Int32) {
         process = nil
         input = nil
+        library = nil  // its window says the program is not there, and asks it nothing more
         switch state {
         case .starting(let checks) where checks.contains { $0.status == .failed }:
             state = .failed(checks)

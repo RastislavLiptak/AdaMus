@@ -1,11 +1,11 @@
-"""Turns the detector's scores into f and the generator weights.
+"""Turns the detector's scores into f, the chance of focus, and whether it is focus.
 
 There is no calibration: the first clean step already controls the music. The
 scores of the steps so far are combined by a hidden Markov model of two states,
 rest and focus, run forward only: before a step the person may have changed
 state with the chance CHANGE_CHANCE, and the step's score then adds its evidence
-(the score is the log odds of focus against rest). f is the chance of focus,
-w_focus = f and w_idle = 1 - f. A step that is not clean keeps the last f.
+(the score is the log odds of focus against rest). f is the chance of focus; it is
+focus while f reaches FOCUS_THRESHOLD. A step that is not clean keeps the last f.
 """
 
 import math
@@ -14,6 +14,7 @@ from typing import Protocol
 
 import numpy as np
 
+from adamus import constants as c
 from adamus.detection.signal_processing import StepSignal
 from adamus.protocol import BlockSpan, locate_step
 
@@ -27,8 +28,7 @@ class StepControl:
     score: float | None  # the detector's score; None when the step was not clean
     f: float | None  # None until the first clean step
     f_held: bool
-    w_idle: float
-    w_focus: float
+    focused: bool | None  # f reaches FOCUS_THRESHOLD; None until the first clean step
 
 
 def focus_of(level: float) -> float:
@@ -71,5 +71,5 @@ class Controller:
             self._level = next_level(self._level, score)
             self._f = focus_of(self._level)
         held = not signal.valid and self._f is not None
-        w_focus = self._f if self._f is not None else 0.0
-        return StepControl(block, full, score, self._f, held, 1.0 - w_focus, w_focus)
+        focused = None if self._f is None else self._f >= c.FOCUS_THRESHOLD
+        return StepControl(block, full, score, self._f, held, focused)

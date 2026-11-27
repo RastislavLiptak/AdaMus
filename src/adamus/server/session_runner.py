@@ -31,7 +31,7 @@ from adamus.machine import Machine
 from adamus.own_recordings import store_recording
 from adamus.realtime.session import run_session
 from adamus.server.api_models import Phase, RunState
-from adamus.server.new_session import PreflightResults, PreparedSession
+from adamus.server.new_session import PreparedSession
 
 IDLE_LOOK_S = 0.2  # how often an idle runner looks whether the app has gone
 Done = TypeVar("Done")  # what work done while idle gives
@@ -50,10 +50,8 @@ class StopOrGone:
 
 class SessionRunner:
     def __init__(
-        self, preflight: PreflightResults, machine: Machine, activity: ActivityLog,
-        app_gone: Callable[[], bool],
-    ) -> None:  # fmt: skip
-        self._preflight = preflight
+        self, machine: Machine, activity: ActivityLog, app_gone: Callable[[], bool]
+    ) -> None:
         self._machine = machine
         self._activity = activity
         self._app_gone = app_gone
@@ -121,7 +119,6 @@ class SessionRunner:
 
     def _run(self, session: PreparedSession) -> None:
         """Run one session and finish it: its own recording, then its metrics."""
-        assert self._preflight.generator is not None, "the preflight passed"
         recording = None if session.recording is None else session.recording.name
         self._activity.write(
             ACTION_SESSION_REQUESTED, kind=session.source.kind, label=session.source.label,
@@ -129,9 +126,8 @@ class SessionRunner:
         )  # fmt: skip
         stop = StopOrGone(self._stop, self._app_gone)
         try:
-            self._play_on(session.output)
             devices = self._machine.devices(
-                session.config, session.recording, self._preflight.generator, stop
+                session.config, session.recording, session.song_id, session.output, stop
             )
             sessions = self._machine.sessions_root
             result = run_session(session.config, session.name, devices, sessions, self._started)
@@ -150,8 +146,6 @@ class SessionRunner:
         elif self._app_gone() and not self._stop.is_set():
             self._activity.write(ACTION_APP_ENDED)
         self._activity.write(ACTION_SESSION_ENDED, reason=result.reason)
-        if self._app_gone() or result.interrupted:  # nothing more to play: Pd goes at once,
-            self._preflight.generator.stop()  # not after the storing and the analysis
         self._set("finishing")
         try:
             if session.recording is None:
@@ -162,17 +156,6 @@ class SessionRunner:
         finally:
             self._activity.wait_for_the_next_session()  # what follows belongs to the next one
             self._set("idle")
-
-    def _play_on(self, output: str) -> None:
-        """Have the generator play on ``output``: Pd plays on one output from its start to its
-        end, so it starts again on another, or on one that was disconnected. The start returns
-        once the music of the prompts is ready, so that the session starts quiet."""
-        generator = self._preflight.generator
-        assert generator is not None, "the preflight passed"
-        if generator.running and generator.output == output and not generator.output_lost:
-            return
-        generator.stop()
-        generator.start(output)
 
     def _started(self, folder: Path) -> None:
         """What the program does for the session goes into its folder from now on."""

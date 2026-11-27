@@ -14,8 +14,8 @@ from adamus.config import write_yaml
 from adamus.main import Program
 from adamus.session_format import read_jsonl
 from tests.support.finished_sessions import synthetic_signals
-from tests.support.stand_in_generator_files import install_generator_files
 from tests.support.stand_in_machine import LIVE_PROTOCOL, StandInMachine, place_focus_model
+from tests.support.stand_in_songs import place_song
 from tests.support.synthetic_dataset import Protocol, write_recording
 
 READY_LOOK_S = 0.01  # how often the app looks whether the program is ready
@@ -57,8 +57,7 @@ class ProgramRun:
         self.app = AppInput()
         self.code: int | None = None
         self.program: Program | None = None
-        self.raw["generator"]["folder"] = "generator"
-        install_generator_files(self.folder / "generator", self.raw["generator"]["model"])
+        place_song(self.folder / c.LIBRARY_DIR)
         place_focus_model(self.folder)
 
     def add_recording(

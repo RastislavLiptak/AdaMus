@@ -13,16 +13,16 @@ import urllib.request
 import pytest
 
 from adamus import constants as c
-from adamus.audio_outputs import AudioOutput
 from adamus.preflight import checks
 from adamus.server.api import TOKEN_HEADER
 from adamus.session_format import read_jsonl
 from tests.support.stand_in_devices import SPEAKERS
+from tests.support.stand_in_songs import SONG
 from tests.support.waiting import wait_until
 
 WAIT_S = 30  # the longest the operator waits for the program
 POLL_S = 0.05
-CHECKS = 6  # of the preflight
+CHECKS = 3  # of the preflight
 
 
 class Operator:
@@ -79,7 +79,7 @@ def test_a_session_over_a_recording_from_the_form_to_the_dashboard(program):
         form = operator.call("POST", "/api/new-session/refresh")  # as the form does as it opens
         seen["sources"] = [source["id"] for source in form["sources"]]
         request = {
-            "style_id": "folk",
+            "song_id": SONG,
             "source_id": "dataset:simulated",
             "recording": "short",
             "name": "S01",
@@ -101,7 +101,7 @@ def test_a_session_over_a_recording_from_the_form_to_the_dashboard(program):
     assert logged[CHECKS:] == [
         "HEADSET_LOOKED_FOR", "SESSION_REQUESTED", "SESSION_STARTED", "SESSION_ENDED"
     ]  # fmt: skip
-    assert program.machine.generator.stopped == 1
+    assert program.machine.musics[-1].stopped == 1
 
 
 def test_the_app_sees_the_checklist_as_it_changes_then_where_the_api_answers(program):
@@ -113,8 +113,7 @@ def test_the_app_sees_the_checklist_as_it_changes_then_where_the_api_answers(pro
     assert operate(program, actions) == 0
     lists = program.checklists()
     assert [row["name"] for row in lists[0]] == [
-        checks.CONFIGURATION, checks.STORAGE, checks.FOCUS_DETECTOR, checks.AUDIO_OUTPUT,
-        checks.GENERATOR_FILES, checks.GENERATOR_START,
+        checks.CONFIGURATION, checks.STORAGE, checks.FOCUS_DETECTOR,
     ]  # fmt: skip
     assert {row["status"] for row in lists[0]} == {checks.PENDING}
     assert any(row["status"] == checks.RUNNING for checklist in lists for row in checklist)
@@ -151,17 +150,13 @@ def test_the_server_stops_with_the_program(program):
 
 
 def test_what_failed_is_told_with_how_to_fix_it_and_the_program_ends(program):
-    program.machine.audio = AudioOutput("USB Headphones", 44100.0)
+    (program.folder / "sessions").write_text("a file, where the sessions would be")
     assert program.start() == 1
     last = {row["name"]: row for row in program.checklists()[-1]}
-    assert last[checks.AUDIO_OUTPUT] == {
-        "name": checks.AUDIO_OUTPUT, "status": checks.FAILED,
-        "detail": "USB Headphones, 44100 Hz (need 48000 Hz)",
-        "fix": "Set the output device to 48000 Hz in Audio MIDI Setup.",
-    }  # fmt: skip
-    assert last[checks.GENERATOR_START]["status"] == checks.SKIPPED
+    assert last[checks.STORAGE]["status"] == checks.FAILED
+    assert last[checks.STORAGE]["fix"] == "Start the program in a folder you can write to."
+    assert last[checks.FOCUS_DETECTOR]["status"] == checks.PASSED  # it does not need storage
     assert program.ready() is None
-    assert program.machine.generator.started == 0
 
 
 def test_the_form_looks_for_the_headset_not_the_start_of_the_program(program):
@@ -196,7 +191,7 @@ def test_deleting_a_session_with_the_headset_takes_its_recording_from_the_source
     def actions(operator):
         operator.call("POST", "/api/new-session/refresh")  # as the form does as it opens
         request = {
-            "style_id": "folk",
+            "song_id": SONG,
             "source_id": "headset:Muse 2",
             "recording": None,
             "name": "L",
@@ -216,15 +211,15 @@ def test_deleting_a_session_with_the_headset_takes_its_recording_from_the_source
 
 
 def test_the_app_ending_mid_session_ends_the_session_as_a_stop_and_then_the_program(program):
-    """The session keeps what it recorded, and the generator is stopped: quitting the app,
-    or its being killed, loses nothing."""
+    """The session keeps what it recorded, and its music is stopped: quitting the app, or its
+    being killed, loses nothing."""
     program.machine.paced = True
     seen = {}
 
     def actions(operator):
         operator.call("POST", "/api/new-session/refresh")
         request = {
-            "style_id": "folk",
+            "song_id": SONG,
             "source_id": "headset:Muse 2",
             "recording": None,
             "name": "live",
@@ -240,53 +235,39 @@ def test_the_app_ending_mid_session_ends_the_session_as_a_stop_and_then_the_prog
     (folder,) = program.session_folders()
     assert read_jsonl(folder / c.FILE_EVENTS)[-1]["reason"] == "user"
     assert (folder / c.FILE_METRICS).is_file()
-    assert program.machine.generator.stopped == 1
+    assert program.machine.musics[-1].stopped == 1
 
 
 def test_the_app_ending_during_the_checks_ends_the_program_at_once(program, monkeypatch):
-    """A training, an installation or the start of the generator may take minutes."""
-    audio = program.machine.audio_output
+    """The first training of the focus detector takes minutes."""
+    (program.folder / c.FOCUS_MODEL_PATH).unlink()
 
     def app_ends_meanwhile():
         program.app.close()
         time.sleep(WAIT_S)  # the program is interrupted before this ends
-        return audio()
 
-    monkeypatch.setattr(program.machine, "audio_output", app_ends_meanwhile)
+    monkeypatch.setattr(program.machine, "train_focus_detector", app_ends_meanwhile)
     began = time.monotonic()
     assert program.start() == 0
     assert time.monotonic() - began < WAIT_S
-    assert program.machine.generator.started == 0
     assert program.ready() is None
 
 
-def test_a_generator_whose_start_is_interrupted_is_stopped_all_the_same(program, monkeypatch):
-    """The app may end while the generator loads its model: Pd must not outlive the program."""
-    start = program.machine.generator.start
-
-    def interrupted_half_way(output):
-        start(output)
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(program.machine.generator, "start", interrupted_half_way)
-    assert program.start() == 0
-    assert program.machine.generator.stopped == 1
-
-
 def test_ctrl_c_during_the_checks_ends_the_program_normally(program, monkeypatch):
+    (program.folder / c.FOCUS_MODEL_PATH).unlink()
+
     def interrupted():
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(program.machine, "audio_output", interrupted)
+    monkeypatch.setattr(program.machine, "train_focus_detector", interrupted)
     assert program.start() == 0
-    assert program.machine.generator.started == 0
+    assert program.ready() is None
 
 
-def test_ctrl_c_while_the_api_answers_ends_the_program_and_stops_the_generator(program):
+def test_ctrl_c_while_the_api_answers_ends_the_program(program):
     def press_ctrl_c():
         wait_until(program.ready, "the program did not get ready", WAIT_S)
         os.kill(os.getpid(), signal.SIGINT)
 
     threading.Thread(target=press_ctrl_c, daemon=True).start()
     assert program.start(app_ends_when_ready=False) == 0
-    assert program.machine.generator.stopped == 1
